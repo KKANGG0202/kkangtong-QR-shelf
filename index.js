@@ -72,6 +72,15 @@ function hash(str) {
     for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
     return (h >>> 0).toString(36);
 }
+// hashing every QR's whole text on each open is slow; remember it until the text changes
+const qrHashes = new WeakMap();
+function qrHash(qr) {
+    const c = qrHashes.get(qr);
+    if (c && c.label === qr.label && c.message === qr.message) return c.h;
+    const h = hash(qr.label + qr.message);
+    qrHashes.set(qr, { label: qr.label, message: qr.message, h });
+    return h;
+}
 function keyOf(set, qr) { return `${set.name}::${qr.id}`; }
 function el(html) {
     const t = document.createElement('template');
@@ -186,8 +195,16 @@ function prepareMessage(text) {
     return t.replaceAll(CARD, '{{char}}');
 }
 
+let catCache = { text: null, list: [] };
 function categories() {
-    return String(S().categoriesText || DEFAULT_CATEGORIES)
+    // called for every QR while rendering, so parse the text only when it changes
+    const text = String(S().categoriesText || DEFAULT_CATEGORIES);
+    if (catCache.text === text) return catCache.list;
+    catCache = { text, list: parseCategories(text) };
+    return catCache.list;
+}
+function parseCategories(text) {
+    return text
         .split('\n').map(l => l.trim()).filter(Boolean)
         .map(line => {
             const i = line.indexOf(':');
@@ -709,11 +726,16 @@ function toggleDrawer() {
 }
 function openDrawer() {
     const d = document.getElementById('qrs_drawer');
-    clearTimeout(drawerEmptyTimer);
-    renderDrawer(true);
+    clearTimeout(drawerParkTimer);
+    d.classList.remove('qrs-parked');
+    // reuse the cards from last time when nothing changed: rebuilding hundreds of cards is
+    // the slow part of opening on phones
+    if (drawerDirty || !d.firstElementChild || drawerSig !== shelfSignature()) renderDrawer(true);
+    else renderArchiveBadge();
     d.classList.remove('qrs-hidden');
     d.setAttribute('aria-hidden', 'false');
     document.getElementById('qrs_root')?.classList.add('qrs-open');
+    updateChatPad();
 }
 function closeDrawer() {
     const d = document.getElementById('qrs_drawer');
@@ -722,12 +744,24 @@ function closeDrawer() {
     d.setAttribute('aria-hidden', 'true');
     document.getElementById('qrs_root')?.classList.remove('qrs-open');
     d.querySelector('.qrs-sheet')?.remove();
-    // hidden cards still take part in layout (keyboard, textarea growing...), so drop them
-    // once the close animation is over
-    clearTimeout(drawerEmptyTimer);
-    drawerEmptyTimer = setTimeout(() => { if (d.classList.contains('qrs-hidden')) d.innerHTML = ''; }, 250);
+    updateChatPad();
+    // after the close animation, let the browser skip the hidden cards entirely
+    // (content-visibility keeps their rendering cached, so reopening is quick)
+    clearTimeout(drawerParkTimer);
+    drawerParkTimer = setTimeout(() => { if (d.classList.contains('qrs-hidden')) d.classList.add('qrs-parked'); }, 250);
 }
-let drawerEmptyTimer = null;
+let drawerParkTimer = null, drawerDirty = true, drawerSig = '';
+/** Cheap fingerprint of everything the shelf shows, to tell whether the cards need rebuilding. */
+function shelfSignature() {
+    const c = ctx();
+    const s = S();
+    const parts = [c.getCurrentChatId?.() ?? '', c.characterId ?? '', c.groupId ?? '', getTarget(), (s.recent ?? []).join(','), s.favorites.join(','), s.categoriesText ?? '', s.charWord, s.userWord];
+    for (const set of allSets()) {
+        parts.push(set.name);
+        for (const qr of set.qrList) parts.push(`${qr.id}:${qr.label}:${qr.isHidden ? 1 : 0}:${qr.message?.length ?? 0}`);
+    }
+    return parts.join('|');
+}
 
 // ---------- long press ----------
 function bindPress(node, onTap, onLong) {
@@ -847,8 +881,10 @@ function groupKey(i, tab) {
 function renderDrawer(force = false) {
     const d = document.getElementById('qrs_drawer');
     if (!d) return;
-    // a closed shelf is emptied (see closeDrawer); it is rebuilt when it opens
-    if (!force && d.classList.contains('qrs-hidden')) return;
+    // a closed shelf is only marked stale; it is rebuilt when it opens
+    if (!force && d.classList.contains('qrs-hidden')) { drawerDirty = true; return; }
+    drawerDirty = false;
+    drawerSig = shelfSignature();
     const s = S();
     const items = collect();
     const tabs = tabsFor(items);
@@ -856,7 +892,6 @@ function renderDrawer(force = false) {
         currentTab = tabs.some(t => t.id === s.lastTab) ? s.lastTab : (tabs.find(t => t.id === 'current') ?? tabs[0]).id;
     }
     const unorganized = items.filter(i => needsOrganize(i)).length;
-    const archiveCount = (ctx().chatMetadata?.qrShelfArchive ?? []).length;
 
     d.innerHTML = `
       <div class="qrs-top">
@@ -864,7 +899,7 @@ function renderDrawer(force = false) {
           <input type="search" placeholder="QR 검색 (이름·설명·세트)" value="${esc(searchText)}"></div>
         <button class="qrs-icon-btn qrs-target ${getTarget() ? 'on' : ''}" title="QR 대상: ${esc(getTarget() || cardName() || '봇카드')} (눌러서 바꾸기)">🎭${getTarget() ? '<span class="qrs-dot"></span>' : ''}</button>
         <button class="qrs-icon-btn qrs-sendmode ${s.sendMode ? 'on' : ''}" title="${s.sendMode ? 'send 모드: /send + /trigger로 실행 중 (눌러서 gen으로)' : 'gen 모드: 원래대로 실행 중 (눌러서 send로)'}">${s.sendMode ? '📨' : '⚡'}</button>
-        <button class="qrs-icon-btn" data-act="archive" title="보관함">📦<span class="qrs-badge">${archiveCount || ''}</span></button>
+        <button class="qrs-icon-btn" data-act="archive" title="보관함">📦</button>
         <button class="qrs-icon-btn" data-act="settings" title="정리 · 설정">⚙️</button>
       </div>
       ${unorganized ? `<div class="qrs-banner"><span>아직 정리 안 된 QR <b>${unorganized}</b>개</span><button class="qrs-mini qrs-mini-main" data-act="organize">✨ 한방 정리</button></div>` : ''}
@@ -921,8 +956,8 @@ function setShelfHeight(v) {
     applyCardSize();
 }
 
-function cardHtml(i) {
-    const fav = S().favorites.includes(i.key);
+function cardHtml(i, favs = new Set(S().favorites)) {
+    const fav = favs.has(i.key);
     const name = i.meta?.name ? displayText(i.meta.name) : (i.qr.title || '');
     const desc = i.meta?.desc ? displayText(i.meta.desc) : '';
     return `<div class="qrs-card ${i.qr.isHidden ? 'qrs-dim' : ''} ${fav ? 'is-fav' : ''}" data-key="${esc(i.key)}" title="${esc(desc || i.qr.title || '')}">
@@ -947,18 +982,31 @@ function renderList(d, items) {
         groups.get(g).push(i);
     }
     const canSort = !searchText && currentTab !== 'recent'; // the recent tab is always newest-first
+    const favs = new Set(S().favorites);
     list.innerHTML = [...groups].map(([g, arr]) => {
         const orderKey = `${currentTab}|${g}`;
         const sorted = canSort && currentTab !== 'fav' ? sortCards(arr, orderKey) : arr;
         return `${g ? `<div class="qrs-group-title">${esc(g)} <span>${sorted.length}</span></div>` : ''}
-        <div class="qrs-grid" data-order-key="${esc(orderKey)}">${sorted.map(cardHtml).join('')}</div>`;
+        <div class="qrs-grid" data-order-key="${esc(orderKey)}">${sorted.map(i => cardHtml(i, favs)).join('')}</div>`;
     }).join('');
-    const byKey = new Map(shown.map(i => [i.key, i]));
-    list.querySelectorAll('.qrs-card').forEach(card => {
-        const item = byKey.get(card.dataset.key);
-        const grid = card.parentElement;
-        bindCard(card, () => runQr(item), () => openDetail(item), canSort ? () => saveCardOrder(grid) : null);
-    });
+    // Cards get their touch handlers the first time they are touched instead of all at once:
+    // a capture listener on the list runs before the card's own listeners, so the handlers
+    // added here still see this same press.
+    list._qrsCtx = { byKey: new Map(shown.map(i => [i.key, i])), canSort };
+    if (!list._qrsBound) {
+        list._qrsBound = true;
+        const lazy = e => {
+            const card = e.target.closest?.('.qrs-card');
+            if (!card || card._qrsBound || !list.contains(card)) return;
+            const { byKey, canSort: sortable } = list._qrsCtx;
+            const item = byKey.get(card.dataset.key);
+            if (!item) return;
+            card._qrsBound = true;
+            const grid = card.parentElement;
+            bindCard(card, () => runQr(item), () => openDetail(item), sortable ? () => saveCardOrder(grid) : null);
+        };
+        for (const t of ['pointerdown', 'click', 'contextmenu']) list.addEventListener(t, lazy, true);
+    }
 }
 
 /** Favorites first, then the user's saved order, then the default order. */
@@ -1121,11 +1169,23 @@ function bindCard(node, onTap, onLong, onReorder) {
     });
 }
 
+/**
+ * Room at the bottom of the chat so the pinned favorites don't cover the last message.
+ * Done with a class on #chat rather than a CSS :has() rule: :has() made every open/close
+ * restyle the whole page, which was the main lag on phones.
+ */
+function updateChatPad() {
+    const strip = document.getElementById('qrs_favstrip');
+    const open = document.getElementById('qrs_root')?.classList.contains('qrs-open');
+    const on = !!strip && !open && !strip.classList.contains('qrs-hidden') && strip.childElementCount > 0 && S().favRows > 0;
+    const chat = document.getElementById('chat');
+    if (chat && chat.classList.contains('qrs-favpad') !== on) chat.classList.toggle('qrs-favpad', on);
+}
 function renderFavStrip() {
     const strip = document.getElementById('qrs_favstrip');
     if (!strip) return;
     const s = S();
-    if (!s.favRows || !s.favorites.length || !api) { strip.innerHTML = ''; strip.classList.add('qrs-hidden'); return; }
+    if (!s.favRows || !s.favorites.length || !api) { strip.innerHTML = ''; strip.classList.add('qrs-hidden'); updateChatPad(); return; }
     const items = collect();
     const all = new Map(items.map(i => [i.key, i]));
     const favs = s.favorites.map(k => all.get(k) ?? findItemAnySection(k)).filter(Boolean);
@@ -1136,11 +1196,13 @@ function renderFavStrip() {
         const item = byKey.get(b.dataset.key);
         bindPress(b, () => runQr(item), () => { openDrawer(); openDetail(item); });
     });
+    updateChatPad();
 }
 
 function renderArchiveBadge() {
-    const b = document.querySelector('#qrs_drawer .qrs-badge');
-    if (b) b.textContent = String((ctx().chatMetadata?.qrShelfArchive ?? []).length || '');
+    // the count is shown inside the archive window (no badge on the 📦 button)
+    const n = document.querySelector('#qrs_archive .qrs-arch-count');
+    if (n) n.textContent = `이 채팅 · ${(ctx().chatMetadata?.qrShelfArchive ?? []).length}개`;
 }
 
 // ---------- sheets ----------
@@ -1728,7 +1790,7 @@ function openArchive() {
     const c = ctx();
     const store = c.chatMetadata?.qrShelfArchive ?? [];
     const modal = el(`<div id="qrs_archive" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
-        <div class="qrs-modal-head"><b>📦 QR 보관함</b> <small>이 채팅 · ${store.length}개</small>
+        <div class="qrs-modal-head"><b>📦 QR 보관함</b> <small class="qrs-arch-count">이 채팅 · ${store.length}개</small>
           <input type="search" class="qrs-in qrs-arch-search" placeholder="QR 이름으로 찾기">
           <button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list"></div></div></div>`);
@@ -1736,6 +1798,7 @@ function openArchive() {
     const list = modal.querySelector('.qrs-arch-list');
     const render = () => {
         const q = modal.querySelector('.qrs-arch-search').value.trim().toLowerCase();
+        renderArchiveBadge();
         const entries = [...store].reverse().filter(en => !q || [en.label, en.name, en.set].some(v => String(v ?? '').toLowerCase().includes(q)));
         if (!entries.length) { list.innerHTML = '<div class="qrs-empty">보관함이 비어 있어요.</div>'; return; }
         list.innerHTML = '';
@@ -1747,6 +1810,7 @@ function openArchive() {
                 <div class="qrs-actions">
                   <button class="qrs-btn qrs-btn-main" data-act="restore">↩ 채팅으로 꺼내기</button>
                   <button class="qrs-btn" data-act="copy">📋 복사</button>
+                  <button class="qrs-btn" data-act="rename">✏️ 이름</button>
                   <button class="qrs-btn" data-act="del">🗑 지우기</button>
                 </div></details>`);
             node.addEventListener('toggle', () => {
@@ -1765,6 +1829,12 @@ function openArchive() {
                 const text = (msgs.length ? msgs : en.msgs).map(m => String(m.mes ?? '').trim()).join('\n\n');
                 if (await copyText(text)) toastr.success('복사했어요.');
                 else toastr.error('복사가 막혀 있어요. 결과를 길게 눌러 직접 복사해 주세요.');
+            });
+            node.querySelector('[data-act="rename"]').addEventListener('click', async () => {
+                const v = await c.Popup.show.input('보관함 이름 바꾸기', '보관함 목록에 보일 이름이에요.', en.name ?? '');
+                if (v === null || v === undefined || v === false) return;
+                en.name = String(v).trim();
+                await c.saveMetadata(); render();
             });
             node.querySelector('[data-act="del"]').addEventListener('click', async () => {
                 const ok = await c.Popup.show.confirm('보관함에서 지울까요?', '지우면 되돌릴 수 없어요.');
@@ -1787,7 +1857,7 @@ function needsOrganize(i) {
     const m = i.meta;
     if (!m) return true;
     if (m.manual) return false;
-    if (m.hash !== hash(i.qr.label + i.qr.message)) return true;
+    if (m.hash !== qrHash(i.qr)) return true;
     if (i.section === 'general' && !categories().some(c => c.label === m.cat)) return true;
     return false;
 }
@@ -1994,7 +2064,7 @@ async function init() {
     addMesButtons();
 
     const ev = c.eventTypes;
-    c.eventSource.on(ev.CHAT_CHANGED, () => { currentTab = null; needArchive = false; buildRoot(); applyLayout(); decorateChat(); addMesButtons(); if (!document.getElementById('qrs_drawer')?.classList.contains('qrs-hidden')) renderDrawer(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { currentTab = null; drawerDirty = true; needArchive = false; buildRoot(); applyLayout(); decorateChat(); addMesButtons(); if (!document.getElementById('qrs_drawer')?.classList.contains('qrs-hidden')) renderDrawer(); });
     for (const e of [ev.CHARACTER_MESSAGE_RENDERED, ev.USER_MESSAGE_RENDERED, ev.MESSAGE_SWIPED, ev.MESSAGE_UPDATED, ev.MESSAGE_DELETED, ev.MORE_MESSAGES_LOADED, ev.MESSAGE_EDITED]) {
         if (e) c.eventSource.on(e, decorateChat);
     }

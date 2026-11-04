@@ -114,6 +114,7 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
     transform-origin: bottom center;
     transition: opacity 0.18s ease, transform 0.18s ease;
 }
+#qrs_drawer.qrs-parked { content-visibility: hidden; }
 #qrs_drawer.qrs-hidden { opacity: 0; transform: translateY(8px) scale(0.98); pointer-events: none; visibility: hidden; }
 
 .qrs-top { display: flex; gap: 6px; align-items: center; padding: 10px 10px 6px; }
@@ -554,7 +555,7 @@ body[data-qrs-handle-pos="right"] #qrs_handle { left: 78%; }
 .qrs-hidden-sets { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
 
 /* keep the last chat message clear of the floating favorites strip */
-body:has(#qrs_root:not(.qrs-open) #qrs_favstrip:not(.qrs-hidden):not(:empty)) #chat { padding-bottom: 44px; }
+#chat.qrs-favpad { padding-bottom: 44px; }
 
 /* sheets and popups never scroll sideways: wrap everything inside to the panel width */
 .qrs-sheet-inner, .qrs-modal-inner { overflow-x: hidden; }
