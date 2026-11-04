@@ -1440,22 +1440,6 @@ async function organize(force) {
     renderFavStrip();
 }
 
-// ---------- extension settings panel ----------
-function buildSettingsPanel() {
-    if (document.getElementById('qrs_settings_panel')) return;
-    const host = document.getElementById('extensions_settings2') ?? document.getElementById('extensions_settings');
-    if (!host) return;
-    const panel = el(`<div id="qrs_settings_panel" class="inline-drawer">
-        <div class="inline-drawer-toggle inline-drawer-header"><b>QR 책장</b><div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div></div>
-        <div class="inline-drawer-content">
-          <p>설정과 한방 정리는 책장 안 ⚙️ 버튼에 있어요.</p>
-          <div class="qrs-actions"><button class="menu_button" data-act="open">책장 열기</button><button class="menu_button" data-act="org">✨ 새 QR만 정리</button></div>
-        </div></div>`);
-    panel.querySelector('[data-act="open"]').addEventListener('click', () => { openDrawer(); openSettingsSheet(); });
-    panel.querySelector('[data-act="org"]').addEventListener('click', () => organize(false));
-    host.append(panel);
-}
-
 // ---------- init ----------
 async function waitForQuickReply() {
     for (let i = 0; i < 60; i++) {
@@ -1477,7 +1461,6 @@ async function init() {
         return;
     }
     buildRoot();
-    buildSettingsPanel();
     decorateChat();
 
     const ev = c.eventTypes;
