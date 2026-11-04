@@ -1566,11 +1566,12 @@ function findTraces() {
     for (let i = 1; i < chat.length; i++) {
         const m = chat[i];
         if (!m || m.extra?.qrShelf || m.extra?.type) continue;
+        // Only messages that clearly look like a QR instruction (and the reply right after one) are listed.
+        // Hidden messages and back-to-back bot messages are normal chat use, so they are never guessed at.
+        // Nothing is pre-checked: the user decides every message.
         const prev = out[out.length - 1];
-        if (m.is_system && !m._summarizedHidden) out.push({ i, reason: '내가 숨긴 메시지', checked: true });
-        else if (m.is_user && QR_PROMPT_RE.test(m.mes ?? '')) out.push({ i, reason: 'QR 지시문 같아요', checked: true });
-        else if (!m.is_user && prev?.i === i - 1 && prev.reason === 'QR 지시문 같아요') out.push({ i, reason: '위 지시문의 답', checked: true });
-        else if (!m.is_user && !m.is_system && chat[i - 1] && !chat[i - 1].is_user && !chat[i - 1].is_system) out.push({ i, reason: '봇 메시지가 연달아 있어요 (QR 결과일 수도)', checked: false });
+        if (m.is_user && QR_PROMPT_RE.test(m.mes ?? '')) out.push({ i, reason: 'QR 지시문 같아요', checked: false });
+        else if (!m.is_user && prev?.i === i - 1 && prev.reason === 'QR 지시문 같아요') out.push({ i, reason: '위 지시문의 답', checked: false });
     }
     return out;
 }
@@ -1582,8 +1583,9 @@ function openTraceCleaner() {
     const modal = el(`<div id="qrs_traces" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>🧹 예전 QR 흔적 정리</b> <small>${traces.length}개 찾음</small><button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list">
-          <div class="qrs-help">책장을 쓰기 전에 돌린 QR 결과를 찾아봤어요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
+          <div class="qrs-help">책장을 쓰기 전에 돌린 QR 지시문과 그 바로 다음 답만 찾았어요. <b>미리 체크된 건 없어요.</b> 꼭 내용을 펼쳐 보고 QR이 맞는 것만 골라주세요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
           그러면 Memoria는 그 턴에서 뽑은 기억을 스스로 지우고, 시나리오 자동요약도 그 메시지의 요약을 지워요. 보관함에서 언제든 다시 꺼낼 수 있어요.</div>
+          ${traces.length ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
           <div class="qrs-trace-list">${traces.length ? traces.map((t, k) => {
             const m = c.chat[t.i];
             return `<label class="qrs-trace"><input type="checkbox" data-k="${k}" ${t.checked ? 'checked' : ''}>
@@ -1595,6 +1597,15 @@ function openTraceCleaner() {
     document.body.append(modal);
     modal.querySelector('.qrs-sheet-close').addEventListener('click', () => modal.remove());
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    const all = modal.querySelector('input[data-act="all"]');
+    const boxes = () => [...modal.querySelectorAll('input[data-k]')];
+    all?.addEventListener('change', () => boxes().forEach(b => { b.checked = all.checked; }));
+    modal.querySelector('.qrs-trace-list')?.addEventListener('change', () => {
+        if (!all) return;
+        const n = boxes().filter(b => b.checked).length;
+        all.checked = n === boxes().length;
+        all.indeterminate = n > 0 && n < boxes().length;
+    });
     modal.querySelector('[data-act="go"]')?.addEventListener('click', async () => {
         if (isGenerating() || busy) { toastr.info('생성이 끝난 뒤에 해주세요.'); return; }
         const picked = [...modal.querySelectorAll('input[data-k]:checked')].map(i => traces[Number(i.dataset.k)].i).sort((a, b) => a - b);
