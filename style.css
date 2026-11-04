@@ -553,3 +553,25 @@ body[data-qrs-handle-pos="right"] #qrs_handle { left: 78%; }
 
 /* keep the last chat message clear of the floating favorites strip */
 body:has(#qrs_root:not(.qrs-open) #qrs_favstrip:not(.qrs-hidden):not(:empty)) #chat { padding-bottom: 44px; }
+
+/* sheets and popups never scroll sideways: wrap everything inside to the panel width */
+.qrs-sheet-inner, .qrs-modal-inner { overflow-x: hidden; }
+.qrs-sheet-inner *, .qrs-modal-inner * { max-width: 100%; box-sizing: border-box; min-width: 0; }
+.qrs-sheet-inner code, .qrs-modal-inner code {
+    white-space: normal !important;
+    word-break: break-all;
+    display: inline;
+    padding: 0 3px;
+    font-size: 0.92em;
+}
+.qrs-help, .qrs-detail-desc, .qrs-section-title, .qrs-sheet-inner label {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+    word-break: keep-all;
+}
+.qrs-sheet-inner .qrs-btn { white-space: normal; text-align: center; }
+.qrs-sheet-inner textarea.qrs-in { width: 100% !important; resize: vertical; }
+.qrs-sheet-inner select.qrs-in { width: 100% !important; text-overflow: ellipsis; }
+.qrs-sheet-inner input[type="checkbox"] { flex: 0 0 auto; width: 18px; height: 18px; margin-top: 3px; }
+.qrs-banner > span, .qrs-runbar-title, .qrs-group-title, #qrs_progress .qrs-prog-text { white-space: normal !important; overflow-wrap: anywhere; min-width: 0; }
+.qrs-runbar { max-width: 100%; box-sizing: border-box; }
