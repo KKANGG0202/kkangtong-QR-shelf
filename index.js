@@ -636,6 +636,11 @@ function buildRoot() {
         const d = document.getElementById('qrs_drawer');
         if (!d || d.classList.contains('qrs-hidden')) return;
         if (e.target.closest('#qrs_root, #qrs_icon, .popup, #qrs_archive, .qrs-modal')) return;
+        // Themes such as Blue Lemonade redraw <select> lists as their own popup outside the shelf.
+        // Tapping an option there must not close the shelf, or the choice is lost with the sheet.
+        if (d.querySelector('.qrs-sheet')) return;                       // a settings/detail sheet is open
+        if (d.contains(document.activeElement) && document.activeElement !== d) return; // a field inside is in use
+        if (e.target.closest('[role="listbox"], [role="option"], [role="menu"], [class*="select"], [id*="select"], [class*="picker"], [class*="dropdown"]')) return;
         closeDrawer();
     }, true);
     applyLayout();
