@@ -228,6 +228,9 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
 .qrs-card:hover { border-color: var(--qrs-line); }
 .qrs-card:active { transform: scale(0.97); }
 .qrs-card.qrs-dim { opacity: 0.45; }
+/* let the browser skip cards that are scrolled out of view (big tabs on phones);
+   `auto` remembers each card's real size once it has been drawn */
+.qrs-list .qrs-card { content-visibility: auto; contain-intrinsic-size: auto 58px; }
 .qrs-card { overflow: hidden; }
 .qrs-card-label {
     font-size: 1em;

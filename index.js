@@ -82,18 +82,32 @@ function isGenerating() {
     const stop = document.getElementById('mes_stop');
     return !!stop && getComputedStyle(stop).display !== 'none';
 }
+// substituteParams is slow and rendering a tab calls displayText hundreds of times,
+// so the names are looked up once and reused until the current task finishes.
+let dtNames = null;
+function displayNames() {
+    if (dtNames) return dtNames;
+    const c = ctx();
+    const st = S();
+    dtNames = {
+        char: getTarget() || c.substituteParams('{{char}}'),
+        user: c.substituteParams('{{user}}'),
+        charWord: String(st.charWord ?? '').trim(),
+        userWord: String(st.userWord ?? '').trim(),
+    };
+    setTimeout(() => { dtNames = null; }, 0);
+    return dtNames;
+}
 function displayText(s) {
     // [CHAR]/[USER] placeholders become the real names (the 🎭 target wins for [CHAR]).
     // The plain words 캐릭터/유저 (e.g. "캐릭터 해리포터" vs "유저 해리포터") use the community's words (깡통/깡캐).
-    const c = ctx();
-    const st = S();
-    const charWord = String(st.charWord ?? '').trim();
-    const userWord = String(st.userWord ?? '').trim();
     let t = String(s ?? '');
-    t = swapWord(t, '[CHAR]', getTarget() || c.substituteParams('{{char}}'));
-    t = swapWord(t, '[USER]', c.substituteParams('{{user}}'));
-    if (charWord) t = swapWord(t, '캐릭터', charWord);
-    if (userWord) t = swapWord(t, '유저', userWord);
+    if (!t) return t;
+    const n = displayNames();
+    t = swapWord(t, '[CHAR]', n.char);
+    t = swapWord(t, '[USER]', n.user);
+    if (n.charWord) t = swapWord(t, '캐릭터', n.charWord);
+    if (n.userWord) t = swapWord(t, '유저', n.userWord);
     return t;
 }
 
@@ -126,6 +140,7 @@ function getTarget() { return String(ctx().chatMetadata?.qrShelfTarget ?? '').tr
 function setTarget(name) {
     const c = ctx();
     c.chatMetadata.qrShelfTarget = name || '';
+    dtNames = null;
     c.saveMetadataDebounced();
 }
 function castList() {
@@ -553,11 +568,13 @@ function decorateChat() {
     decorateTimer = setTimeout(doDecorate, 50);
 }
 function doDecorate() {
+    const groups = pendingGroups();
+    // nothing pending and nothing drawn: skip the DOM work (this runs on every rendered message)
+    if (!groups.size && !document.querySelector('.qrs-runbar, .mes.qrs-pending')) return;
     const chatEl = document.getElementById('chat');
     const atBottom = chatEl ? chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 60 : false;
     document.querySelectorAll('.qrs-runbar').forEach(n => n.remove());
     document.querySelectorAll('.mes.qrs-pending').forEach(n => n.classList.remove('qrs-pending'));
-    const groups = pendingGroups();
     for (const [run, idxs] of groups) {
         for (const i of idxs) document.querySelector(`#chat .mes[mesid="${i}"]`)?.classList.add('qrs-pending');
         const lastIdx = idxs[idxs.length - 1];
@@ -692,7 +709,8 @@ function toggleDrawer() {
 }
 function openDrawer() {
     const d = document.getElementById('qrs_drawer');
-    renderDrawer();
+    clearTimeout(drawerEmptyTimer);
+    renderDrawer(true);
     d.classList.remove('qrs-hidden');
     d.setAttribute('aria-hidden', 'false');
     document.getElementById('qrs_root')?.classList.add('qrs-open');
@@ -704,7 +722,12 @@ function closeDrawer() {
     d.setAttribute('aria-hidden', 'true');
     document.getElementById('qrs_root')?.classList.remove('qrs-open');
     d.querySelector('.qrs-sheet')?.remove();
+    // hidden cards still take part in layout (keyboard, textarea growing...), so drop them
+    // once the close animation is over
+    clearTimeout(drawerEmptyTimer);
+    drawerEmptyTimer = setTimeout(() => { if (d.classList.contains('qrs-hidden')) d.innerHTML = ''; }, 250);
 }
+let drawerEmptyTimer = null;
 
 // ---------- long press ----------
 function bindPress(node, onTap, onLong) {
@@ -797,13 +820,15 @@ function filterItems(items, tab) {
     const s = S();
     const q = searchText.trim().toLowerCase();
     if (q) {
-        return items.filter(i => [i.qr.label, i.qr.title, i.meta?.name, i.meta?.desc, displayText(i.meta?.name), displayText(i.meta?.desc), i.set.name, i.meta?.cat]
-            .some(v => String(v ?? '').toLowerCase().includes(q)));
+        // the searchable text is built once per item, not on every keystroke
+        return items.filter(i => (i._hay ??= [i.qr.label, i.qr.title, i.meta?.name, i.meta?.desc, displayText(i.meta?.name), displayText(i.meta?.desc), i.set.name, i.meta?.cat]
+            .map(v => String(v ?? '').toLowerCase()).join('\n')).includes(q));
     }
     const catLabels = new Set(categories().map(c => c.label));
+    const byKey = () => new Map(items.map(i => [i.key, i]));
     switch (true) {
-        case tab === 'fav': return s.favorites.map(k => items.find(i => i.key === k)).filter(Boolean);
-        case tab === 'recent': return (s.recent ?? []).map(k => items.find(i => i.key === k)).filter(Boolean);
+        case tab === 'fav': { const m = byKey(); return s.favorites.map(k => m.get(k)).filter(Boolean); }
+        case tab === 'recent': { const m = byKey(); return (s.recent ?? []).map(k => m.get(k)).filter(Boolean); }
         case tab === 'current': return items.filter(i => i.section === 'current');
         case tab === 'world': return items.filter(i => i.section === 'world');
         case tab === 'uncat': return items.filter(i => i.section === 'general' && !(i.meta && catLabels.has(i.meta.cat)));
@@ -819,9 +844,11 @@ function groupKey(i, tab) {
     return null;
 }
 
-function renderDrawer() {
+function renderDrawer(force = false) {
     const d = document.getElementById('qrs_drawer');
     if (!d) return;
+    // a closed shelf is emptied (see closeDrawer); it is rebuilt when it opens
+    if (!force && d.classList.contains('qrs-hidden')) return;
     const s = S();
     const items = collect();
     const tabs = tabsFor(items);
@@ -845,7 +872,15 @@ function renderDrawer() {
       <div class="qrs-list"></div>`;
 
     const input = d.querySelector('.qrs-search input');
-    input.addEventListener('input', () => { searchText = input.value; renderList(d, items); d.querySelectorAll('.qrs-tab').forEach(b => b.classList.toggle('on', !searchText && b.dataset.tab === currentTab)); });
+    let searchTimer = null;
+    input.addEventListener('input', () => {
+        // wait for a short pause in typing so the list isn't rebuilt on every letter
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            searchText = input.value; renderList(d, items);
+            d.querySelectorAll('.qrs-tab').forEach(b => b.classList.toggle('on', !searchText && b.dataset.tab === currentTab));
+        }, 120);
+    });
     d.querySelector('.qrs-sendmode').addEventListener('click', () => { s.sendMode = !s.sendMode; save(); renderDrawer(); toastr.info(s.sendMode ? 'send 모드: /gen QR을 /send + /trigger로 보내요.' : 'gen 모드: 원래대로 실행해요.'); });
     d.querySelector('.qrs-target').addEventListener('click', openTargetSheet);
     d.querySelector('[data-act="archive"]').addEventListener('click', openArchive);
@@ -890,7 +925,7 @@ function cardHtml(i) {
     const fav = S().favorites.includes(i.key);
     const name = i.meta?.name ? displayText(i.meta.name) : (i.qr.title || '');
     const desc = i.meta?.desc ? displayText(i.meta.desc) : '';
-    return `<div class="qrs-card ${i.qr.isHidden ? 'qrs-dim' : ''} ${fav ? 'is-fav' : ''}" data-key="${esc(i.key)}" title="${esc(i.meta?.desc ? displayText(i.meta.desc) : i.qr.title || '')}">
+    return `<div class="qrs-card ${i.qr.isHidden ? 'qrs-dim' : ''} ${fav ? 'is-fav' : ''}" data-key="${esc(i.key)}" title="${esc(desc || i.qr.title || '')}">
         ${fav ? '<span class="qrs-fav-dot">★</span>' : ''}
         <div class="qrs-card-label">${esc(i.qr.label || '(이름 없음)')}</div>
         ${name ? `<div class="qrs-card-name">${esc(name)}</div>` : ''}
@@ -987,7 +1022,14 @@ function bindCard(node, onTap, onLong, onReorder) {
         document.addEventListener('pointercancel', docUp, true);
         document.addEventListener('touchmove', docTouch, { capture: true, passive: false });
     };
-    const docMove = (e) => { if (e.pointerId === pid && dragging) { e.preventDefault(); moveDrag(e); } };
+    let lastMove = null, moveFrame = 0;
+    const docMove = (e) => {
+        if (e.pointerId !== pid || !dragging) return;
+        e.preventDefault();
+        // phones fire pointermove faster than the screen refreshes; handle at most one per frame
+        lastMove = { clientX: e.clientX, clientY: e.clientY };
+        if (!moveFrame) moveFrame = requestAnimationFrame(() => { moveFrame = 0; if (dragging && lastMove) moveDrag(lastMove); });
+    };
     const docUp = (e) => { if (e.pointerId === pid && dragging) { e.stopPropagation(); clearTimeout(timer); endDrag(); } };
     const docTouch = (e) => { if (dragging) e.preventDefault(); };
     const moveDrag = (e) => {
@@ -1013,6 +1055,7 @@ function bindCard(node, onTap, onLong, onReorder) {
         document.removeEventListener('pointerup', docUp, true);
         document.removeEventListener('pointercancel', docUp, true);
         document.removeEventListener('touchmove', docTouch, { capture: true });
+        cancelAnimationFrame(moveFrame); moveFrame = 0; lastMove = null;
         ghost?.remove(); ghost = null;
         node.classList.remove('qrs-placeholder', 'qrs-lifted');
         dragging = false; armed = false; down = false;
@@ -1084,7 +1127,8 @@ function renderFavStrip() {
     const s = S();
     if (!s.favRows || !s.favorites.length || !api) { strip.innerHTML = ''; strip.classList.add('qrs-hidden'); return; }
     const items = collect();
-    const favs = s.favorites.map(k => items.find(i => i.key === k) ?? findItemAnySection(k)).filter(Boolean);
+    const all = new Map(items.map(i => [i.key, i]));
+    const favs = s.favorites.map(k => all.get(k) ?? findItemAnySection(k)).filter(Boolean);
     strip.classList.toggle('qrs-hidden', !favs.length);
     strip.innerHTML = favs.map(i => `<button class="qrs-favchip" data-key="${esc(i.key)}">${esc(i.qr.label)}</button>`).join('');
     const byKey = new Map(favs.map(i => [i.key, i]));
@@ -1326,7 +1370,7 @@ function openSettingsSheet() {
     sheet.querySelectorAll('[data-k]').forEach(inp => inp.addEventListener('change', () => {
         const k = inp.dataset.k;
         s[k] = inp.type === 'checkbox' ? inp.checked : (['favRows', 'batchSize', 'concurrency'].includes(k) ? Number(inp.value) : inp.value);
-        save(); applyLayout();
+        save(); dtNames = null; applyLayout();
         if (['charWord', 'userWord', 'showHidden'].includes(k)) {
             const d = document.getElementById('qrs_drawer');
             if (d?.querySelector('.qrs-list')) renderList(d, collect()); // refresh the cards behind the sheet
