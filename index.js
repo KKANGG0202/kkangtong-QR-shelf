@@ -1785,8 +1785,83 @@ async function applyImport(data) {
 }
 
 // ---------- archive viewer ----------
+/**
+ * Where a message's translation lives. Translators (Chat Translation, LLM Translator, Blue Lemonade's
+ * translator...) keep it in extra.display_text; while "show original" is on, LLM Translator and
+ * Blue Lemonade move it to extra.original_translation_backup and put the original in display_text.
+ */
+function trField(m) {
+    const ex = m?.extra;
+    if (!ex) return null;
+    const ok = v => typeof v === 'string' && v.trim() !== '';
+    if (ok(ex.original_translation_backup)) return 'original_translation_backup';
+    if (ok(ex.display_text) && ex.display_text !== m.mes) return 'display_text';
+    return null;
+}
+// Blue Lemonade/LLM Translator can show the translation folded together with the original
+// (<details class="llm-translator-details">...). Blue Lemonade exports a helper that keeps only the
+// translation; use it when that extension is installed, otherwise leave the text as it is.
+let translationOnlyFn = null;
+function loadTranslationOnly() {
+    if (translationOnlyFn) return Promise.resolve(translationOnlyFn);
+    return import('/scripts/extensions/third-party/blue-lemonade/src/swipe-picker-translation.js')
+        .then(mod => (typeof mod.translationOnly === 'function' ? mod.translationOnly : t => t))
+        .catch(() => t => t)
+        .then(fn => (translationOnlyFn = fn));
+}
+const onlyTranslation = t => (translationOnlyFn ? translationOnlyFn(t) : t);
+/** What the chat showed (the translation when there is one). */
+function shownText(m) {
+    const f = trField(m);
+    return f ? onlyTranslation(m.extra[f]) : (m?.mes ?? '');
+}
+/** One archived message: shown like in the chat, with original/translation switch and editing. */
+function archMsgNode(m, en) {
+    const c = ctx();
+    const trKey = trField(m);
+    const hasTr = !!trKey;
+    let field = hasTr ? 'display' : 'mes'; // which text is on screen
+    const node = el(`<div class="qrs-arch-msg ${m.is_user ? 'is-user' : ''}">
+        <div class="qrs-arch-name"><span>${esc(m.name)}</span><span class="qrs-arch-tools">
+          ${hasTr ? '<button class="qrs-mini" data-act="lang">원문 보기</button>' : ''}
+          <button class="qrs-mini" data-act="edit">✏️ 고치기</button></span></div>
+        <div class="mes_text"></div></div>`);
+    const textBox = node.querySelector('.mes_text');
+    const get = () => (field === 'display' ? m.extra[trKey] : m.mes) ?? '';
+    const show = () => { textBox.innerHTML = c.messageFormatting(get(), m.name, !!m.is_system, !!m.is_user, -1); };
+    show();
+    node.querySelector('[data-act="lang"]')?.addEventListener('click', e => {
+        field = field === 'display' ? 'mes' : 'display';
+        e.currentTarget.textContent = field === 'display' ? '원문 보기' : '번역 보기';
+        show();
+    });
+    node.querySelector('[data-act="edit"]').addEventListener('click', () => {
+        if (node.querySelector('.qrs-arch-edit')) return;
+        const ed = el(`<div class="qrs-arch-edit">
+            <textarea class="qrs-in" rows="8"></textarea>
+            <div class="qrs-actions"><button class="qrs-btn qrs-btn-main" data-act="save">저장</button><button class="qrs-btn" data-act="cancel">취소</button></div></div>`);
+        const ta = ed.querySelector('textarea');
+        // a folded "translation + original" view is edited as the translation only
+        ta.value = field === 'display' ? onlyTranslation(get()) : get();
+        textBox.replaceWith(ed);
+        ta.focus();
+        const done = () => { ed.replaceWith(textBox); show(); };
+        ed.querySelector('[data-act="cancel"]').addEventListener('click', done);
+        ed.querySelector('[data-act="save"]').addEventListener('click', async () => {
+            if (field === 'display') m.extra[trKey] = ta.value; else m.mes = ta.value;
+            // keep the swipe copy in step, so restoring the message keeps the edit
+            if (field === 'mes' && Array.isArray(m.swipes) && Number.isInteger(m.swipe_id) && m.swipes[m.swipe_id] !== undefined) m.swipes[m.swipe_id] = ta.value;
+            await c.saveMetadata();
+            done();
+            toastr.success('고쳤어요.');
+        });
+    });
+    return node;
+}
+
 function openArchive() {
     document.getElementById('qrs_archive')?.remove();
+    loadTranslationOnly();
     const c = ctx();
     const store = c.chatMetadata?.qrShelfArchive ?? [];
     const modal = el(`<div id="qrs_archive" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
@@ -1817,16 +1892,13 @@ function openArchive() {
                 if (!node.open) return;
                 const box = node.querySelector('.qrs-arch-msgs');
                 if (box.childElementCount) return;
-                for (const m of en.msgs) {
-                    const text = c.messageFormatting(m.mes ?? '', m.name, !!m.is_system, !!m.is_user, -1);
-                    box.append(el(`<div class="qrs-arch-msg ${m.is_user ? 'is-user' : ''}"><div class="qrs-arch-name">${esc(m.name)}</div><div class="mes_text">${text}</div></div>`));
-                }
+                for (const m of en.msgs) box.append(archMsgNode(m, en));
             });
             node.querySelector('[data-act="restore"]').addEventListener('click', async () => { await restoreEntry(en); render(); });
             node.querySelector('[data-act="copy"]').addEventListener('click', async () => {
                 // copy the result text only (skip the instruction message that send mode posts)
                 const msgs = en.msgs.filter(m => !m.is_user);
-                const text = (msgs.length ? msgs : en.msgs).map(m => String(m.mes ?? '').trim()).join('\n\n');
+                const text = (msgs.length ? msgs : en.msgs).map(m => String(shownText(m)).trim()).join('\n\n');
                 if (await copyText(text)) toastr.success('복사했어요.');
                 else toastr.error('복사가 막혀 있어요. 결과를 길게 눌러 직접 복사해 주세요.');
             });

@@ -368,7 +368,10 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
 .qrs-arch-label { font-size: 1.1em; }
 .qrs-arch-msg { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: rgba(127, 127, 127, 0.08); }
 .qrs-arch-msg.is-user { opacity: 0.75; }
-.qrs-arch-name { font-size: 0.8em; opacity: 0.6; margin-bottom: 3px; }
+.qrs-arch-name { font-size: 0.8em; margin-bottom: 3px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.qrs-arch-name > span:first-child { opacity: 0.6; }
+.qrs-arch-tools { margin-left: auto; display: flex; gap: 4px; }
+.qrs-arch-edit textarea { width: 100%; box-sizing: border-box; min-height: 140px; resize: vertical; font: inherit; white-space: pre-wrap !important; }
 
 /* progress */
 #qrs_progress {
