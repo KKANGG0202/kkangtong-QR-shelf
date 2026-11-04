@@ -18,6 +18,7 @@ const DEFAULTS = {
     openMode: 'handle',        // 'handle' | 'icon'
     handlePos: 'auto',         // 'auto' | 'center' | 'left' | 'right'
     profileId: '',             // connection profile for organizing ('' = current API)
+    qrProfileId: '',           // connection profile to switch to while a QR runs ('' = stay as is)
     tabOrder: [],              // user-defined tab order (tab ids)
     hiddenTabs: [],            // tab ids the user hid
     hiddenQrs: [],             // single QR keys hidden from the shelf only
@@ -269,6 +270,43 @@ function toSendMode(text) {
 }
 
 const LAST_VAR = 'qrs_last_story_message';
+
+// ---------- separate connection profile for running QRs ----------
+const NO_PROFILE = '<None>';
+function profileNameById(id) {
+    return connectionProfiles().find(p => p.id === id)?.name ?? null;
+}
+async function currentProfileName() {
+    const r = await ctx().executeSlashCommandsWithOptions('/profile', { handleParserErrors: true });
+    return String(r?.pipe ?? '').trim() || NO_PROFILE;
+}
+async function switchProfileByName(name) {
+    const q = `"${String(name).replace(/"/g, '\\"')}"`;
+    try {
+        await ctx().executeSlashCommandsWithOptions(`/profile await=true ${q}`, { handleParserErrors: true });
+        return true;
+    } catch (e) {
+        console.error(LOG, 'profile switch', e);
+        toastr.error(`연결 프로필을 바꾸지 못했어요: ${name}`);
+        return false;
+    }
+}
+/**
+ * Switch to the QR profile for this run. Returns the profile name to switch back to afterwards,
+ * or null when nothing was switched.
+ */
+async function switchToQrProfile() {
+    const target = profileNameById(S().qrProfileId);
+    if (!target) return null;
+    const now = await currentProfileName();
+    if (now === target) return null;
+    if (now === NO_PROFILE) {
+        // nothing saved to return to, so switching would leave the chat on the QR profile
+        toastr.warning('지금 연결이 프로필로 저장돼 있지 않아서, 원래 연결로 실행했어요. 채팅용 연결도 프로필로 저장해 주세요.', '', { timeOut: 8000 });
+        return null;
+    }
+    return (await switchProfileByName(target)) ? now : null;
+}
 const RECENT_MAX = 20;
 function pushRecent(key) {
     const s = S();
@@ -306,7 +344,9 @@ async function runQr(item) {
     runAside = S().autoArchive && isAside(item);
     let usedLastVar = false;
     runInstructions = [];
+    let restoreProfile = null;
     try {
+        restoreProfile = await switchToQrProfile();
         let altered = prepareMessage(qr.message);
         // {{lastMessage}} doesn't skip hidden messages, so it would read a previous QR result still
         // waiting in the chat. Point it at the last real story message instead.
@@ -325,6 +365,7 @@ async function runQr(item) {
         console.error(LOG, e);
         toastr.error(`QR 실행 중 오류: ${e?.message ?? e}`);
     } finally {
+        if (restoreProfile) await switchProfileByName(restoreProfile);
         busy = false;
         if (usedLastVar) { try { c.variables.local.del(LAST_VAR); } catch { /* ignore */ } }
     }
@@ -1201,6 +1242,15 @@ function openSettingsSheet() {
         <div class="qrs-help">한 줄에 하나씩 써요. <code>이름 : 이런 QR이 들어가요</code> 처럼 콜론 뒤에 설명을 붙이면 AI가 더 잘 나눠요. 바꾼 뒤 <b>새 QR만 정리</b>를 누르면 안 맞는 것만 다시 나눠요.</div>
         <textarea class="qrs-in qrs-cats" rows="6">${esc(s.categoriesText)}</textarea>
         <div class="qrs-actions"><button class="qrs-btn" data-act="cats-save">카테고리 저장</button><button class="qrs-btn" data-act="cats-reset">기본값으로</button></div>
+      </div>
+      <div class="qrs-section">
+        <div class="qrs-section-title">🔌 QR 실행용 연결</div>
+        <div class="qrs-help">책장에서 QR을 돌릴 때만 이 연결 프로필(API·모델·프리셋)로 잠깐 바꿨다가, 끝나면 원래 채팅 연결로 돌아와요. 가벼운 모델이나 짧은 프롬프트 프리셋을 쓰면 빠르고 저렴해요.</div>
+        <label><select class="qrs-in" data-k="qrProfileId">
+          <option value="">바꾸지 않기 (지금 채팅 연결 그대로)</option>
+          ${connectionProfiles().map(p => `<option value="${esc(p.id)}" ${s.qrProfileId === p.id ? 'selected' : ''}>🔌 ${esc(p.name)}</option>`).join('')}
+        </select></label>
+        <div class="qrs-help">⚠️ 채팅 연결도 <b>프로필로 저장된 상태</b>여야 원래대로 돌아올 수 있어요. 저장 안 한 연결 설정 변경은 돌아올 때 프로필 값으로 되돌아가요.</div>
       </div>
       <div class="qrs-section">
         <div class="qrs-section-title">🧺 보관함</div>
