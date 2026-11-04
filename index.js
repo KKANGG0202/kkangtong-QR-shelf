@@ -1565,6 +1565,47 @@ function openTraceCleaner() {
     });
 }
 
+// ---------- manual archive from a message's ⋯ menu ----------
+const MES_BTN = '<div class="mes_button qrs-mes-archive fa-solid fa-box-archive interactable" title="QR 책장 보관함에 넣기" tabindex="0"></div>';
+/** Add the button to the message template (new messages) and to messages already on screen. */
+function addMesButtons() {
+    const tpl = document.querySelector('#message_template .extraMesButtons');
+    if (tpl && !tpl.querySelector('.qrs-mes-archive')) tpl.insertAdjacentHTML('afterbegin', MES_BTN);
+    document.querySelectorAll('#chat .mes .extraMesButtons').forEach(b => {
+        if (!b.querySelector('.qrs-mes-archive')) b.insertAdjacentHTML('afterbegin', MES_BTN);
+    });
+}
+async function archiveMessage(i) {
+    if (isGenerating() || busy) { toastr.info('생성이 끝난 뒤에 해주세요.'); return; }
+    const c = ctx();
+    const m = c.chat[i];
+    if (!m) return;
+    const q = m.extra?.qrShelf;
+    // a shelf result (also one that was 📌 kept) goes in together with the rest of its run
+    const runIdx = q?.run ? c.chat.map((x, k) => (x?.extra?.qrShelf?.run === q.run ? k : -1)).filter(k => k >= 0) : [];
+    const ok = await c.Popup.show.confirm(
+        runIdx.length > 1 ? `이 QR 결과(메시지 ${runIdx.length}개)를 보관함으로 옮길까요?` : '이 메시지를 보관함으로 옮길까요?',
+        '채팅에서는 빠지고, 보관함에서 다시 꺼낼 수 있어요. 꺼내면 채팅 맨 끝에 붙어요.');
+    if (!ok) return;
+    let run;
+    if (runIdx.length) {
+        run = q.run;
+        for (const k of runIdx) c.chat[k].extra.qrShelf.state = 'pending';
+    } else {
+        run = `manual${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+        m.extra ??= {};
+        m.extra.qrShelf = { state: 'pending', run, key: null, label: '📥', name: `직접 넣은 메시지 · ${m.name ?? ''}`, set: '', ts: Date.now() };
+    }
+    if (await archivePending(run)) toastr.success('보관함에 넣었어요.');
+}
+document.addEventListener('click', e => {
+    const b = e.target.closest?.('.qrs-mes-archive');
+    if (!b) return;
+    e.stopPropagation();
+    const id = Number(b.closest('.mes')?.getAttribute('mesid'));
+    if (Number.isInteger(id)) archiveMessage(id);
+});
+
 // ---------- clipboard ----------
 async function copyText(text) {
     try {
@@ -1950,12 +1991,14 @@ async function init() {
     }
     buildRoot();
     decorateChat();
+    addMesButtons();
 
     const ev = c.eventTypes;
-    c.eventSource.on(ev.CHAT_CHANGED, () => { currentTab = null; needArchive = false; buildRoot(); applyLayout(); decorateChat(); if (!document.getElementById('qrs_drawer')?.classList.contains('qrs-hidden')) renderDrawer(); });
+    c.eventSource.on(ev.CHAT_CHANGED, () => { currentTab = null; needArchive = false; buildRoot(); applyLayout(); decorateChat(); addMesButtons(); if (!document.getElementById('qrs_drawer')?.classList.contains('qrs-hidden')) renderDrawer(); });
     for (const e of [ev.CHARACTER_MESSAGE_RENDERED, ev.USER_MESSAGE_RENDERED, ev.MESSAGE_SWIPED, ev.MESSAGE_UPDATED, ev.MESSAGE_DELETED, ev.MORE_MESSAGES_LOADED, ev.MESSAGE_EDITED]) {
         if (e) c.eventSource.on(e, decorateChat);
     }
+    if (ev.MORE_MESSAGES_LOADED) c.eventSource.on(ev.MORE_MESSAGES_LOADED, addMesButtons);
     // While a shelf QR runs, hide its output before memory/summary extensions see it.
     // makeFirst puts our listener ahead of extensions like Memoria that record on MESSAGE_RECEIVED.
     const first = (e, fn) => (typeof c.eventSource.makeFirst === 'function' ? c.eventSource.makeFirst(e, fn) : c.eventSource.on(e, fn));
