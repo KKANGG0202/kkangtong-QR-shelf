@@ -681,12 +681,12 @@ function tabsFor(items) {
     const s = S();
     const tabs = [];
     if (s.favorites.length) tabs.push({ id: 'fav', label: '⭐ 즐겨찾기' });
-    if (s.recent?.length) tabs.push({ id: 'recent', label: '🕘 최근' });
     if (items.some(i => i.section === 'current')) tabs.push({ id: 'current', label: '🤖 이 봇' });
     for (const c of categories()) tabs.push({ id: `cat:${c.label}`, label: c.label });
     const catLabels = new Set(categories().map(c => c.label));
     if (items.some(i => i.section === 'general' && !(i.meta && catLabels.has(i.meta.cat)))) tabs.push({ id: 'uncat', label: '❔ 미분류' });
     if (items.some(i => i.section === 'world')) tabs.push({ id: 'world', label: '🌍 세계관' });
+    if (s.recent?.length) tabs.push({ id: 'recent', label: '🕘 최근' });
     tabs.push({ id: 'all', label: '📚 전체' });
     return orderTabs(tabs);
 }
@@ -703,11 +703,11 @@ function orderTabs(tabs, includeHidden = false) {
 function allTabDefs() {
     return [
         { id: 'fav', label: '⭐ 즐겨찾기' },
-        { id: 'recent', label: '🕘 최근' },
         { id: 'current', label: '🤖 이 봇' },
         ...categories().map(c => ({ id: `cat:${c.label}`, label: c.label })),
         { id: 'uncat', label: '❔ 미분류' },
         { id: 'world', label: '🌍 세계관' },
+        { id: 'recent', label: '🕘 최근' },
         { id: 'all', label: '📚 전체' },
     ];
 }
@@ -918,11 +918,13 @@ function saveCardOrder(grid) {
  */
 function bindCard(node, onTap, onLong, onReorder) {
     let timer = null, armed = false, dragging = false, suppressClick = false, down = false;
-    let sx = 0, sy = 0, pointerType = 'mouse', ghost = null, pid = null;
+    let sx = 0, sy = 0, pointerType = 'mouse', ghost = null, pid = null, startIndex = -1;
+    const indexOf = () => [...(node.parentElement?.children ?? [])].indexOf(node);
 
     const startDrag = (e) => {
         if (!onReorder) return;
         dragging = true;
+        startIndex = indexOf();
         clearTimeout(timer);
         const r = node.getBoundingClientRect();
         ghost = node.cloneNode(true);
@@ -969,6 +971,11 @@ function bindCard(node, onTap, onLong, onReorder) {
         node.classList.remove('qrs-placeholder', 'qrs-lifted');
         dragging = false; armed = false; down = false;
         suppressClick = true;
+        // a held finger that wobbled but never left its spot is a long press, not a reorder
+        if (indexOf() === startIndex) {
+            if (pointerType !== 'mouse') onLong();
+            return;
+        }
         onReorder();
     };
 
@@ -986,7 +993,9 @@ function bindCard(node, onTap, onLong, onReorder) {
     });
     node.addEventListener('pointermove', e => {
         if (dragging || !down || e.pointerId !== pid) return; // drag moves are handled on the document
-        const moved = Math.abs(e.clientX - sx) > 6 || Math.abs(e.clientY - sy) > 6;
+        // fingers wobble while holding, so touch needs a bigger move before it counts as a drag
+        const limit = pointerType === 'mouse' ? 6 : 14;
+        const moved = Math.abs(e.clientX - sx) > limit || Math.abs(e.clientY - sy) > limit;
         if (!moved) return;
         if (pointerType === 'mouse' && e.buttons === 1 && !armed) { startDrag(e); moveDrag(e); return; }
         if (pointerType !== 'mouse' && armed) { startDrag(e); moveDrag(e); return; }
@@ -1008,6 +1017,8 @@ function bindCard(node, onTap, onLong, onReorder) {
         if (!dragging) down = false;
         if (dragging) return;
         node.classList.remove('qrs-lifted');
+        // some phone browsers cancel the touch after a long hold: the hold still counts
+        if (armed && pointerType !== 'mouse') { armed = false; suppressClick = true; onLong(); return; }
         armed = false;
     });
     node.addEventListener('click', e => {

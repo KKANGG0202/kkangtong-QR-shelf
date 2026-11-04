@@ -310,7 +310,7 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
 .qrs-help { font-size: 0.82em; opacity: 0.75; line-height: 1.45; }
 
 /* QR result bar in chat */
-.mes.qrs-pending .mes_block { border-left: 3px solid var(--qrs-accent); padding-left: 6px; }
+.mes.qrs-pending .mes_block { border-left: 3px solid var(--qrs-accent); padding-left: 14px !important; box-sizing: border-box; }
 .qrs-runbar {
     display: flex;
     flex-wrap: wrap;
