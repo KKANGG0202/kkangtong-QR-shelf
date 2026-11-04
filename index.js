@@ -14,7 +14,8 @@ const DEFAULT_CATEGORIES = [
 ].join('\n');
 
 const DEFAULTS = {
-    openMode: 'handle',        // 'handle' | 'icon'
+    openMode: 'icon',          // 'icon' | 'handle'
+    handlePos: 'auto',         // 'auto' | 'center' | 'left' | 'right'
     profileId: '',             // connection profile for organizing ('' = current API)
     tabOrder: [],              // user-defined tab order (tab ids)
     hiddenTabs: [],            // tab ids the user hid
@@ -477,6 +478,9 @@ function buildRoot() {
         <div id="qrs_favstrip"></div>
     </div>`);
     form.insertBefore(root, sendForm);
+    // re-check the handle spot when other extensions add or remove their own handles
+    new MutationObserver(() => { const p = handlePos(); if (document.body.dataset.qrsHandlePos !== p) document.body.dataset.qrsHandlePos = p; })
+        .observe(form, { childList: true });
     root.querySelector('#qrs_handle').addEventListener('click', toggleDrawer);
 
     if (!document.getElementById('qrs_icon')) {
@@ -523,7 +527,20 @@ function applyLayout() {
     document.body.classList.toggle('qrs-no-handle', s.openMode === 'icon');
     document.body.classList.toggle('qrs-no-icon', s.openMode === 'handle');
     document.body.dataset.qrsFavRows = String(s.favRows);
+    document.body.dataset.qrsHandlePos = handlePos();
     renderFavStrip();
+}
+
+/** Other extensions that also dock a centered handle above the input bar. */
+const OTHER_HANDLES = ['#vc_player'];
+function handlePos() {
+    const pos = S().handlePos || 'auto';
+    if (pos !== 'auto') return pos;
+    // share the spot politely: if another handle sits in the middle, move ours to the left
+    return OTHER_HANDLES.some(sel => {
+        const n = document.querySelector(sel);
+        return n && getComputedStyle(n).display !== 'none';
+    }) ? 'left' : 'center';
 }
 
 function toggleDrawer() {
@@ -1041,6 +1058,12 @@ function openSettingsSheet() {
         <label>여는 방법 <select class="qrs-in" data-k="openMode">
           <option value="handle" ${s.openMode !== 'icon' ? 'selected' : ''}>입력창 위 손잡이</option>
           <option value="icon" ${s.openMode === 'icon' ? 'selected' : ''}>입력창 아이콘 (☰ 🪄 옆)</option>
+        </select></label>
+        <label>손잡이 위치 <select class="qrs-in" data-k="handlePos">
+          <option value="auto" ${(s.handlePos || 'auto') === 'auto' ? 'selected' : ''}>자동 (다른 손잡이가 있으면 피하기)</option>
+          <option value="center" ${s.handlePos === 'center' ? 'selected' : ''}>가운데</option>
+          <option value="left" ${s.handlePos === 'left' ? 'selected' : ''}>왼쪽</option>
+          <option value="right" ${s.handlePos === 'right' ? 'selected' : ''}>오른쪽</option>
         </select></label>
         <label>즐겨찾기 고정 줄 <select class="qrs-in" data-k="favRows">
           ${[0, 1, 2].map(n => `<option value="${n}" ${s.favRows === n ? 'selected' : ''}>${n ? `${n}줄` : '안 함'}</option>`).join('')}

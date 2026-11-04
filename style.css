@@ -504,3 +504,7 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
 .qrs-ghost .qrs-card-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 #qrs_root.qrs-open #qrs_favstrip { visibility: hidden; }
+
+/* handle position (auto moves aside when another extension docks a handle in the middle) */
+body[data-qrs-handle-pos="left"] #qrs_handle { left: 22%; }
+body[data-qrs-handle-pos="right"] #qrs_handle { left: 78%; }
