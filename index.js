@@ -6,7 +6,8 @@ const MODULE = 'qrShelf';
 const LOG = '[QR Shelf]';
 
 const DEFAULT_CATEGORIES = [
-    '💕 연애·관계 : 연애, 스킨십, 감정, 관계 분석',
+    '💕 연애·관계 : 연애, 감정, 관계 분석 (수위 없는 것)',
+    '🔞 수위 : 성적인 내용, 19금 묘사, 수위 높은 상황극',
     '🎉 재미·이벤트 : what-if 상황극, 게임, 패러디, 미니 이벤트',
     '🔍 분석·정보 : 분석, 상태창, 요약, 프로필, 검진, 리포트',
     '🛠️ 시스템·편의 : 설정, 대필, 진행 지시, 스킵, 세트 전환 같은 도구',
@@ -14,17 +15,23 @@ const DEFAULT_CATEGORIES = [
 ].join('\n');
 
 const DEFAULTS = {
-    openMode: 'icon',          // 'icon' | 'handle'
+    openMode: 'handle',        // 'handle' | 'icon'
     handlePos: 'auto',         // 'auto' | 'center' | 'left' | 'right'
     profileId: '',             // connection profile for organizing ('' = current API)
     tabOrder: [],              // user-defined tab order (tab ids)
     hiddenTabs: [],            // tab ids the user hid
+    hiddenQrs: [],             // single QR keys hidden from the shelf only
+    hiddenSets: [],            // set names hidden from the shelf only (the Quick Reply data is untouched)
+    recent: [],                // most recently run card keys (newest first)
     cardOrder: {},             // "tab|group" -> [card keys] user-defined order inside a tab
     hideQrBar: true,
     favRows: 1,                // 0..2 rows of favorites under the handle
     categoriesText: DEFAULT_CATEGORIES,
     outputLang: 'Korean',
+    charWord: '깡통',          // how names/descriptions call the bot ('' = real name)
+    userWord: '깡캐',          // how they call the user's character ('' = real name)
     batchSize: 20,
+    concurrency: 3,            // organize batches sent at the same time
     autoArchive: true,
     archiveSystem: false,      // also archive /sys messages
     excludePending: true,      // keep pending QR results out of the next prompt
@@ -44,6 +51,7 @@ const DEFAULTS = {
 let api = null;
 let busy = false;              // a shelf-run QR is executing
 let runAside = false;         // the running QR's output is a side activity (gets hidden/archived)
+let runInstructions = [];     // send-mode instruction messages posted during the current run
 let organizing = false;
 let stopOrganize = false;
 let needArchive = false;
@@ -74,11 +82,40 @@ function isGenerating() {
     return !!stop && getComputedStyle(stop).display !== 'none';
 }
 function displayText(s) {
-    // AI output uses [CHAR]/[USER] placeholders; show the real names.
+    // [CHAR]/[USER] placeholders become the real names (the 🎭 target wins for [CHAR]).
+    // The plain words 캐릭터/유저 (e.g. "캐릭터 해리포터" vs "유저 해리포터") use the community's words (깡통/깡캐).
     const c = ctx();
-    return String(s ?? '')
-        .replaceAll('[CHAR]', getTarget() || c.substituteParams('{{char}}'))
-        .replaceAll('[USER]', c.substituteParams('{{user}}'));
+    const st = S();
+    const charWord = String(st.charWord ?? '').trim();
+    const userWord = String(st.userWord ?? '').trim();
+    let t = String(s ?? '');
+    t = swapWord(t, '[CHAR]', getTarget() || c.substituteParams('{{char}}'));
+    t = swapWord(t, '[USER]', c.substituteParams('{{user}}'));
+    if (charWord) t = swapWord(t, '캐릭터', charWord);
+    if (userWord) t = swapWord(t, '유저', userWord);
+    return t;
+}
+
+/** Replace a word and fix the Korean particle after it (깡통이 / 깡캐가, 을/를, 은/는 …). */
+const JOSA = [['이', '가'], ['을', '를'], ['은', '는'], ['과', '와'], ['이랑', '랑'], ['으로', '로'], ['아', '야']];
+function hasBatchim(word) {
+    const ch = String(word).trim().slice(-1);
+    const code = ch.charCodeAt(0) - 0xAC00;
+    if (code < 0 || code > 11171) return false; // not Hangul: treat like a vowel ending
+    return code % 28 !== 0;
+}
+function swapWord(text, from, to) {
+    if (!text.includes(from)) return text;
+    const esc = from.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`${esc}(이랑|랑|으로|로|이|가|을|를|은|는|과|와)?`, 'g');
+    const batchim = hasBatchim(to);
+    return text.replace(re, (_m, josa) => {
+        if (!josa) return to;
+        const pair = JOSA.find(([a, b]) => a === josa || b === josa);
+        // 으로/로: ㄹ받침은 '로'
+        if (pair && pair[0] === '으로') return to + (batchim && !/[ㄹ]$/.test(to) && (String(to).slice(-1).charCodeAt(0) - 0xAC00) % 28 !== 8 ? '으로' : '로');
+        return to + (pair ? (batchim ? pair[0] : pair[1]) : josa);
+    });
 }
 
 // ---------- target character (for multi-character cards) ----------
@@ -199,7 +236,10 @@ function collect() {
     const { current, owners } = linkInfo();
     const s = S();
     const items = [];
+    const hiddenSets = new Set(s.hiddenSets ?? []);
+    const hiddenQrsSet = new Set(s.hiddenQrs ?? []);
     for (const set of allSets()) {
+        if (hiddenSets.has(set.name)) continue;
         const info = s.setInfo[set.name] ?? {};
         let section = 'general';
         if (current.has(set.name)) section = 'current';
@@ -207,6 +247,7 @@ function collect() {
         for (const qr of set.qrList) {
             if (qr.isHidden && !s.showHidden) continue;
             const key = keyOf(set, qr);
+            if (hiddenQrsSet.has(key)) continue;
             items.push({
                 set, qr, key, section,
                 meta: s.meta[key] ?? null,
@@ -225,6 +266,14 @@ function toSendMode(text) {
         if (p.length > 1 && p.startsWith('"') && p.endsWith('"')) p = p.slice(1, -1);
         return `/send ${p} | /trigger await=true `;
     });
+}
+
+const LAST_VAR = 'qrs_last_story_message';
+const RECENT_MAX = 20;
+function pushRecent(key) {
+    const s = S();
+    s.recent = [key, ...(s.recent ?? []).filter(k => k !== key)].slice(0, RECENT_MAX);
+    save();
 }
 
 /** Is this QR's output a side activity (archive it) or part of the story (leave it)? */
@@ -249,13 +298,27 @@ async function runQr(item) {
         return;
     }
     closeDrawer();
+    pushRecent(key);
     const c = ctx();
     const chatId = c.getCurrentChatId();
     const start = c.chat.length;
     busy = true;
     runAside = S().autoArchive && isAside(item);
+    let usedLastVar = false;
+    runInstructions = [];
     try {
-        const altered = prepareMessage(qr.message);
+        let altered = prepareMessage(qr.message);
+        // {{lastMessage}} doesn't skip hidden messages, so it would read a previous QR result still
+        // waiting in the chat. Point it at the last real story message instead.
+        if (/\{\{lastMessage\}\}/i.test(altered)) {
+            const real = [...c.chat].reverse().find(m => m?.extra?.qrShelf?.state !== 'pending');
+            const last = c.chat[c.chat.length - 1];
+            if (real && last !== real) {
+                c.variables.local.set(LAST_VAR, String(real.mes ?? ''));
+                altered = altered.replace(/\{\{lastMessage\}\}/gi, `{{getvar::${LAST_VAR}}}`);
+                usedLastVar = true;
+            }
+        }
         if (altered !== qr.message) await set.execute(qr, altered);
         else await qr.execute();
     } catch (e) {
@@ -263,6 +326,7 @@ async function runQr(item) {
         toastr.error(`QR 실행 중 오류: ${e?.message ?? e}`);
     } finally {
         busy = false;
+        if (usedLastVar) { try { c.variables.local.del(LAST_VAR); } catch { /* ignore */ } }
     }
     if (ctx().getCurrentChatId() !== chatId) return;
     await markRun(start, item);
@@ -285,6 +349,7 @@ async function markRun(start, item) {
         m.extra.qrShelf = {
             state: 'pending', run, key: item.key, label: item.qr.label,
             name: item.meta?.name ?? '', set: item.set.name, ts: Date.now(),
+            ...(runInstructions.includes(m) ? { instr: true } : {}),
         };
         // /send mode replies come from /trigger with the card's name
         if (rename && !m.is_user && m.name === card) {
@@ -337,10 +402,12 @@ async function archivePending(onlyRun = null) {
     const store = (c.chatMetadata.qrShelfArchive ??= []);
     const all = [];
     for (const [run, idxs] of groups) {
-        const msgs = idxs.map(i => structuredClone(c.chat[i]));
-        const q = msgs[0].extra.qrShelf;
+        // send-mode instructions are only plumbing: delete them from the chat but don't keep them
+        const keep = idxs.filter(i => !c.chat[i]?.extra?.qrShelf?.instr);
+        const msgs = keep.map(i => structuredClone(c.chat[i]));
+        const q = c.chat[idxs[0]].extra.qrShelf;
         msgs.forEach(m => { m.extra.qrShelf.state = 'archived'; });
-        store.push({ run, ts: q.ts ?? Date.now(), key: q.key, label: q.label, name: q.name, set: q.set, msgs });
+        if (msgs.length) store.push({ run, ts: q.ts ?? Date.now(), key: q.key, label: q.label, name: q.name, set: q.set, msgs });
         all.push(...idxs);
     }
     await cutIndices(all);
@@ -365,15 +432,20 @@ function applyHiddenFlags(m, on) {
     if (on) {
         if (!m.is_system) { m.is_system = true; m._qrsHidden = true; }
         m._userHidden = true;
+        // '코끼리를 생각하지마' reads this marker as "QR side activity, leave it out of memory"
+        m.extra ??= {};
+        if (!m.extra.lm_qr) { m.extra.lm_qr = 'aside'; m._qrsLmQr = true; }
     } else {
         if (m._qrsHidden) { m.is_system = false; delete m._qrsHidden; }
         delete m._userHidden;
+        if (m._qrsLmQr) { delete m.extra?.lm_qr; delete m._qrsLmQr; }
     }
 }
 
 async function keepRun(run) {
     const c = ctx();
-    c.chat.forEach((m, i) => { const q = m?.extra?.qrShelf; if (q?.run === run) { q.state = 'kept'; setHidden(i, false); } });
+    // keep the result in the story; a send-mode instruction stays hidden so it never reaches later prompts
+    c.chat.forEach((m, i) => { const q = m?.extra?.qrShelf; if (q?.run === run) { q.state = 'kept'; if (!q.instr) setHidden(i, false); } });
     await c.saveChat();
     decorateChat();
     toastr.success('채팅에 남겨뒀어요.');
@@ -440,6 +512,8 @@ function decorateChat() {
     decorateTimer = setTimeout(doDecorate, 50);
 }
 function doDecorate() {
+    const chatEl = document.getElementById('chat');
+    const atBottom = chatEl ? chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight < 60 : false;
     document.querySelectorAll('.qrs-runbar').forEach(n => n.remove());
     document.querySelectorAll('.mes.qrs-pending').forEach(n => n.classList.remove('qrs-pending'));
     const groups = pendingGroups();
@@ -449,7 +523,7 @@ function doDecorate() {
         const mesEl = document.querySelector(`#chat .mes[mesid="${lastIdx}"] .mes_block`);
         if (!mesEl) continue;
         const q = ctx().chat[lastIdx].extra.qrShelf;
-        const bar = el(`<div class="qrs-runbar">
+        const bar = el(`<div class="qrs-runbar" data-bl-native-ext-colors>
             <span class="qrs-runbar-title">${esc(q.label)} ${q.name ? `· ${esc(displayText(q.name))}` : ''}</span>
             <span class="qrs-runbar-actions">
                 <button class="qrs-mini" data-act="rerun" title="같은 QR 다시 돌리기">🔁 다시</button>
@@ -464,6 +538,8 @@ function doDecorate() {
         });
         mesEl.append(bar);
     }
+    // the bar makes the last message taller; keep the chat pinned to the bottom if it was
+    if (atBottom && chatEl) chatEl.scrollTop = chatEl.scrollHeight;
 }
 
 // ---------- UI: root, handle, icon ----------
@@ -472,15 +548,34 @@ function buildRoot() {
     const form = document.getElementById('form_sheld');
     const sendForm = document.getElementById('send_form');
     if (!form || !sendForm) return;
-    const root = el(`<div id="qrs_root">
+    const root = el(`<div id="qrs_root" data-bl-native-ext-colors>
         <div id="qrs_drawer" class="qrs-hidden" aria-hidden="true"></div>
         <div id="qrs_handle" title="QR 책장 (탭해서 열기)"><span class="qrs-pill"></span></div>
         <div id="qrs_favstrip"></div>
     </div>`);
     form.insertBefore(root, sendForm);
     // re-check the handle spot when other extensions add or remove their own handles
-    new MutationObserver(() => { const p = handlePos(); if (document.body.dataset.qrsHandlePos !== p) document.body.dataset.qrsHandlePos = p; })
-        .observe(form, { childList: true });
+    // (also when they are switched on/off: that only changes their style, so watch attributes too)
+    const recheck = () => { const p = handlePos(); if (document.body.dataset.qrsHandlePos !== p) document.body.dataset.qrsHandlePos = p; };
+    new MutationObserver(recheck).observe(form, { childList: true, subtree: false, attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+    for (const sel of OTHER_HANDLES) {
+        const n = document.querySelector(sel);
+        if (n && !n.dataset.qrsWatched) {
+            n.dataset.qrsWatched = '1';
+            new MutationObserver(recheck).observe(n, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+        }
+    }
+    // the other player may be created after us
+    new MutationObserver(() => {
+        for (const sel of OTHER_HANDLES) {
+            const n = document.querySelector(sel);
+            if (n && !n.dataset.qrsWatched) {
+                n.dataset.qrsWatched = '1';
+                new MutationObserver(recheck).observe(n, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+            }
+        }
+        recheck();
+    }).observe(form, { childList: true });
     root.querySelector('#qrs_handle').addEventListener('click', toggleDrawer);
 
     if (!document.getElementById('qrs_icon')) {
@@ -523,6 +618,7 @@ function placeIcon() {
 
 function applyLayout() {
     const s = S();
+    applyCardSize();
     document.body.classList.toggle('qrs-hide-qrbar', !!s.hideQrBar);
     document.body.classList.toggle('qrs-no-handle', s.openMode === 'icon');
     document.body.classList.toggle('qrs-no-icon', s.openMode === 'handle');
@@ -536,7 +632,7 @@ const OTHER_HANDLES = ['#vc_player'];
 function handlePos() {
     const pos = S().handlePos || 'auto';
     if (pos !== 'auto') return pos;
-    // share the spot politely: if another handle sits in the middle, move ours to the left
+    // share the spot politely: if another extension shows a handle in the middle, move ours to the left
     return OTHER_HANDLES.some(sel => {
         const n = document.querySelector(sel);
         return n && getComputedStyle(n).display !== 'none';
@@ -585,6 +681,7 @@ function tabsFor(items) {
     const s = S();
     const tabs = [];
     if (s.favorites.length) tabs.push({ id: 'fav', label: '⭐ 즐겨찾기' });
+    if (s.recent?.length) tabs.push({ id: 'recent', label: '🕘 최근' });
     if (items.some(i => i.section === 'current')) tabs.push({ id: 'current', label: '🤖 이 봇' });
     for (const c of categories()) tabs.push({ id: `cat:${c.label}`, label: c.label });
     const catLabels = new Set(categories().map(c => c.label));
@@ -606,6 +703,7 @@ function orderTabs(tabs, includeHidden = false) {
 function allTabDefs() {
     return [
         { id: 'fav', label: '⭐ 즐겨찾기' },
+        { id: 'recent', label: '🕘 최근' },
         { id: 'current', label: '🤖 이 봇' },
         ...categories().map(c => ({ id: `cat:${c.label}`, label: c.label })),
         { id: 'uncat', label: '❔ 미분류' },
@@ -653,12 +751,13 @@ function filterItems(items, tab) {
     const s = S();
     const q = searchText.trim().toLowerCase();
     if (q) {
-        return items.filter(i => [i.qr.label, i.qr.title, i.meta?.name, i.meta?.desc, i.set.name, i.meta?.cat]
+        return items.filter(i => [i.qr.label, i.qr.title, i.meta?.name, i.meta?.desc, displayText(i.meta?.name), displayText(i.meta?.desc), i.set.name, i.meta?.cat]
             .some(v => String(v ?? '').toLowerCase().includes(q)));
     }
     const catLabels = new Set(categories().map(c => c.label));
     switch (true) {
         case tab === 'fav': return s.favorites.map(k => items.find(i => i.key === k)).filter(Boolean);
+        case tab === 'recent': return (s.recent ?? []).map(k => items.find(i => i.key === k)).filter(Boolean);
         case tab === 'current': return items.filter(i => i.section === 'current');
         case tab === 'world': return items.filter(i => i.section === 'world');
         case tab === 'uncat': return items.filter(i => i.section === 'general' && !(i.meta && catLabels.has(i.meta.cat)));
@@ -716,13 +815,40 @@ function renderDrawer() {
     renderList(d, items);
 }
 
+const SIZE_KEY = 'qrShelf.cardSize';
+/** Card size is per device (phone and PC usually want different sizes). */
+function getCardSize() {
+    try { return localStorage.getItem(SIZE_KEY) || 'normal'; } catch { return 'normal'; }
+}
+function setCardSize(v) {
+    try { localStorage.setItem(SIZE_KEY, v); } catch { /* private mode etc. */ }
+    applyCardSize();
+}
+function applyCardSize() {
+    const root = document.getElementById('qrs_root');
+    root?.setAttribute('data-card-size', getCardSize());
+    root?.setAttribute('data-height', getShelfHeight());
+}
+
+const HEIGHT_KEY = 'qrShelf.height';
+/** How tall the open shelf gets; per device like the card size. */
+function getShelfHeight() {
+    try { return localStorage.getItem(HEIGHT_KEY) || 'half'; } catch { return 'half'; }
+}
+function setShelfHeight(v) {
+    try { localStorage.setItem(HEIGHT_KEY, v); } catch { /* ignore */ }
+    applyCardSize();
+}
+
 function cardHtml(i) {
     const fav = S().favorites.includes(i.key);
     const name = i.meta?.name ? displayText(i.meta.name) : (i.qr.title || '');
+    const desc = i.meta?.desc ? displayText(i.meta.desc) : '';
     return `<div class="qrs-card ${i.qr.isHidden ? 'qrs-dim' : ''} ${fav ? 'is-fav' : ''}" data-key="${esc(i.key)}" title="${esc(i.meta?.desc ? displayText(i.meta.desc) : i.qr.title || '')}">
         ${fav ? '<span class="qrs-fav-dot">★</span>' : ''}
         <div class="qrs-card-label">${esc(i.qr.label || '(이름 없음)')}</div>
         ${name ? `<div class="qrs-card-name">${esc(name)}</div>` : ''}
+        ${desc ? `<div class="qrs-card-desc">${esc(desc)}</div>` : ''}
       </div>`;
 }
 
@@ -739,7 +865,7 @@ function renderList(d, items) {
         if (!groups.has(g)) groups.set(g, []);
         groups.get(g).push(i);
     }
-    const canSort = !searchText;
+    const canSort = !searchText && currentTab !== 'recent'; // the recent tab is always newest-first
     list.innerHTML = [...groups].map(([g, arr]) => {
         const orderKey = `${currentTab}|${g}`;
         const sorted = canSort && currentTab !== 'fav' ? sortCards(arr, orderKey) : arr;
@@ -801,6 +927,7 @@ function bindCard(node, onTap, onLong, onReorder) {
         const r = node.getBoundingClientRect();
         ghost = node.cloneNode(true);
         ghost.classList.add('qrs-ghost');
+        ghost.setAttribute('data-bl-native-ext-colors', '');
         Object.assign(ghost.style, { width: `${r.width}px`, height: `${r.height}px`, left: `${r.left}px`, top: `${r.top}px` });
         ghost.dataset.dx = String(e.clientX - r.left);
         ghost.dataset.dy = String(e.clientY - r.top);
@@ -950,6 +1077,8 @@ function openDetail(item) {
         <button class="qrs-btn qrs-btn-main" data-act="run">▶ 실행</button>
         <button class="qrs-btn" data-act="fav">${fav ? '★ 즐겨찾기 해제' : '☆ 즐겨찾기'}</button>
         <button class="qrs-btn" data-act="edit">✏️ 편집</button>
+        <button class="qrs-btn" data-act="hideqr" title="이 버튼 하나만 책장에서 안 보이게 해요 (원본은 그대로)">🙈 이 QR만 숨기기</button>
+        <button class="qrs-btn" data-act="hideset" title="이 QR이 들어 있는 세트 전체를 책장에서 안 보이게 해요 (원본은 그대로)">🙈 세트 통째로 숨기기</button>
       </div>
       <details class="qrs-more"><summary>이름·카테고리 바꾸기</summary>
         <label>이름 <input class="qrs-in" data-f="name" value="${esc(meta.name ?? '')}"></label>
@@ -981,6 +1110,19 @@ function openDetail(item) {
             save(); renderFavStrip(); renderDrawer(); openDetail(item);
         }
         if (act === 'edit') { closeDrawer(); await qr.showEditor(); }
+        if (act === 'hideqr') {
+            s.hiddenQrs = [...new Set([...(s.hiddenQrs ?? []), key])];
+            save(); sheet.remove(); renderDrawer(); renderFavStrip();
+            toastr.success(`'${qr.label}'을(를) 숨겼어요. ⚙️ → 숨긴 항목에서 되돌릴 수 있어요.`);
+        }
+        if (act === 'hideset') {
+            const sample = esc(set.qrList.slice(0, 8).map(q => q.label).join(' '));
+            const ok = await ctx().Popup.show.confirm(`'${esc(set.name)}' 세트를 통째로 숨길까요?`, `이 세트 안의 QR ${set.qrList.length}개가 책장에서 안 보여요: ${sample}${set.qrList.length > 8 ? ' …' : ''}<br>다른 세트의 QR은 그대로 보여요. 원래 QR도 지워지지 않아요.`);
+            if (!ok) return;
+            s.hiddenSets = [...new Set([...(s.hiddenSets ?? []), set.name])];
+            save(); sheet.remove(); renderDrawer(); renderFavStrip();
+            toastr.success(`'${set.name}' 세트를 숨겼어요.`);
+        }
         if (act === 'savemeta') {
             const v = f => sheet.querySelector(`[data-f="${f}"]`).value;
             s.meta[key] = { ...meta, name: v('name').trim(), desc: v('desc').trim(), cat: v('cat'), hash: meta.hash ?? hash(qr.label + qr.message), manual: true };
@@ -1027,12 +1169,20 @@ function openSettingsSheet() {
           <option value="">지금 연결된 API</option>
           ${connectionProfiles().map(p => `<option value="${esc(p.id)}" ${s.profileId === p.id ? 'selected' : ''}>🔌 ${esc(p.name)}</option>`).join('')}
         </select></label>
+        <label>동시에 보낼 묶음 수 <select class="qrs-in" data-k="concurrency">
+          ${[1, 2, 3, 4, 6].map(n => `<option value="${n}" ${Number(s.concurrency ?? 3) === n ? 'selected' : ''}>${n}개${n === 1 ? ' (느리지만 안전)' : n === 3 ? ' (기본)' : n === 6 ? ' (가장 빠름, 요청 한도 주의)' : ''}</option>`).join('')}
+        </select></label>
         <label>한 번에 보낼 QR 수 <select class="qrs-in" data-k="batchSize">
           ${[10, 20, 30, 40].map(n => `<option value="${n}" ${Number(s.batchSize) === n ? 'selected' : ''}>${n}개${n === 20 ? ' (기본)' : n === 40 ? ' (빠름, 긴 응답 필요)' : ''}</option>`).join('')}
         </select></label>
         <div class="qrs-actions">
           <button class="qrs-btn qrs-btn-main" data-act="org-new">새 QR만 정리</button>
           <button class="qrs-btn" data-act="org-all">전부 다시 정리</button>
+        </div>
+        <label>한 카테고리만 다시 정리 <small>(새 카테고리를 만들었을 때 거기로 옮길 것만 다시 나눠요)</small>
+          <select class="qrs-in" data-recat>${categories().map(c => `<option>${esc(c.label)}</option>`).join('')}</select></label>
+        <div class="qrs-actions">
+          <button class="qrs-btn" data-act="org-cat">이 카테고리 다시 정리</button>
         </div>
       </div>
       <div class="qrs-section">
@@ -1049,15 +1199,34 @@ function openSettingsSheet() {
         <label class="qrs-check"><input type="checkbox" data-k="archiveSystem" ${s.archiveSystem ? 'checked' : ''}> 시스템 메시지(/sys 메뉴)도 보관함으로</label>
       </div>
       <div class="qrs-section">
+        <div class="qrs-section-title">📤 정리 결과 옮기기</div>
+        <div class="qrs-help">이름·설명·카테고리 같은 <b>정리 결과만</b> 파일 하나로 옮겨요. QR 내용 자체는 기본 Quick Reply에 있어서, 다른 기기에서도 같은 QR 세트가 먼저 있어야 해요. 세트 이름이나 순서가 달라도 <b>내용이 같은 QR을 찾아서</b> 붙여요.</div>
+        <label class="qrs-check"><input type="checkbox" data-exp-mine checked> 내 즐겨찾기·카드 순서·탭 순서도 같이 넣기</label>
+        <div class="qrs-actions">
+          <button class="qrs-btn" data-act="export">📤 내보내기</button>
+          <button class="qrs-btn" data-act="import">📥 가져오기</button>
+        </div>
+      </div>
+      <div class="qrs-section">
         <div class="qrs-section-title">🧹 기억 청소</div>
         <div class="qrs-help">책장을 쓰기 전에 돌린 QR 결과가 요약·장기기억에 들어가 있다면, 이 채팅에서 흔적을 찾아 보관함으로 옮겨요. 옮기면 기억 확장도 그 부분을 지워요.</div>
         <div class="qrs-actions"><button class="qrs-btn" data-act="traces">예전 QR 흔적 찾기</button></div>
       </div>
       <div class="qrs-section">
         <div class="qrs-section-title">🎛️ 모양</div>
+        <label>책장 높이 <small>(이 기기에만 적용)</small> <select class="qrs-in" data-shelf-height>
+          <option value="full" ${getShelfHeight() === 'full' ? 'selected' : ''}>많이: 화면 대부분</option>
+          <option value="half" ${getShelfHeight() === 'half' ? 'selected' : ''}>절반 (기본)</option>
+          <option value="peek" ${getShelfHeight() === 'peek' ? 'selected' : ''}>살짝: 두세 줄만</option>
+        </select></label>
+        <label>카드 크기 <small>(이 기기에만 적용)</small> <select class="qrs-in" data-size>
+          <option value="small" ${getCardSize() === 'small' ? 'selected' : ''}>작게: 이모지만, 한 화면에 많이</option>
+          <option value="normal" ${getCardSize() === 'normal' ? 'selected' : ''}>보통: 이모지 + 이름</option>
+          <option value="large" ${getCardSize() === 'large' ? 'selected' : ''}>크게: 설명까지</option>
+        </select></label>
         <label>여는 방법 <select class="qrs-in" data-k="openMode">
           <option value="handle" ${s.openMode !== 'icon' ? 'selected' : ''}>입력창 위 손잡이</option>
-          <option value="icon" ${s.openMode === 'icon' ? 'selected' : ''}>입력창 아이콘 (☰ 🪄 옆)</option>
+          <option value="icon" ${s.openMode === 'icon' ? 'selected' : ''}>입력창 안 아이콘</option>
         </select></label>
         <label>손잡이 위치 <select class="qrs-in" data-k="handlePos">
           <option value="auto" ${(s.handlePos || 'auto') === 'auto' ? 'selected' : ''}>자동 (다른 손잡이가 있으면 피하기)</option>
@@ -1070,19 +1239,57 @@ function openSettingsSheet() {
         </select></label>
         <label class="qrs-check"><input type="checkbox" data-k="hideQrBar" ${s.hideQrBar ? 'checked' : ''}> 기본 QR바 숨기기</label>
         <label class="qrs-check"><input type="checkbox" data-k="showHidden" ${s.showHidden ? 'checked' : ''}> 숨김 처리된 QR도 보기</label>
+      </div>
+      <div class="qrs-section">
+        <div class="qrs-section-title">🙈 숨긴 항목</div>
+        ${(s.hiddenQrs ?? []).length
+            ? `<div class="qrs-help">숨긴 QR</div><div class="qrs-hidden-sets">${s.hiddenQrs.map(k => { const it = findItemAnySection(k); return `<span class="qrs-target-row"><span class="qrs-target-item">${esc(it?.qr.label ?? k)}</span><button class="qrs-x" data-unhide-qr="${esc(k)}" title="다시 보이기">↩</button></span>`; }).join('')}</div>`
+            : ''}
+        ${(s.hiddenSets ?? []).length
+            ? `<div class="qrs-help">책장에서만 숨긴 세트예요. 원래 QR은 그대로 있어요.</div>
+               <div class="qrs-hidden-sets">${s.hiddenSets.map(n => `<span class="qrs-target-row"><span class="qrs-target-item">${esc(n)}</span><button class="qrs-x" data-unhide="${esc(n)}" title="다시 보이기">↩</button></span>`).join('')}</div>`
+            : ((s.hiddenQrs ?? []).length ? '' : '<div class="qrs-help">숨긴 게 없어요. QR을 길게 누르면 나오는 카드에서 <b>🙈 이 QR만 숨기기</b>나 <b>🙈 세트 통째로 숨기기</b>를 누르면 돼요.</div>')}
         <label>설명 언어 <input class="qrs-in" data-k="outputLang" value="${esc(s.outputLang)}"></label>
+        <label>'캐릭터' 대신 쓸 말 <input class="qrs-in" data-k="charWord" value="${esc(s.charWord ?? '')}" placeholder="비우면 '캐릭터' 그대로"></label>
+        <label>'유저' 대신 쓸 말 <input class="qrs-in" data-k="userWord" value="${esc(s.userWord ?? '')}" placeholder="비우면 '유저' 그대로"></label>
+        <div class="qrs-help">QR 이름의 '캐릭터 ○○'·'유저 ○○'를 이 말로 바꿔 보여줘요 (예: 깡통 해리포터 / 깡캐 해리포터). 설명 속 실제 봇·페르소나 이름은 그대로예요. 이미 정리된 것도 바로 바뀌어요.</div>
       </div>`);
 
+    sheet.querySelector('[data-size]')?.addEventListener('change', e => setCardSize(e.target.value));
+    sheet.querySelector('[data-shelf-height]')?.addEventListener('change', e => setShelfHeight(e.target.value));
     sheet.querySelectorAll('[data-k]').forEach(inp => inp.addEventListener('change', () => {
         const k = inp.dataset.k;
-        s[k] = inp.type === 'checkbox' ? inp.checked : (['favRows', 'batchSize'].includes(k) ? Number(inp.value) : inp.value);
+        s[k] = inp.type === 'checkbox' ? inp.checked : (['favRows', 'batchSize', 'concurrency'].includes(k) ? Number(inp.value) : inp.value);
         save(); applyLayout();
+        if (['charWord', 'userWord', 'showHidden'].includes(k)) {
+            const d = document.getElementById('qrs_drawer');
+            if (d?.querySelector('.qrs-list')) renderList(d, collect()); // refresh the cards behind the sheet
+        }
     }));
     sheet.addEventListener('click', e => {
         const act = e.target.closest('[data-act]')?.dataset.act;
         if (act === 'org-new') organize(false);
         if (act === 'org-all') organize(true);
+        if (act === 'org-cat') {
+            const cat = sheet.querySelector('[data-recat]')?.value;
+            const n = collect().filter(i => i.section === 'general' && i.meta?.cat === cat && !i.meta?.manual).length;
+            ctx().Popup.show.confirm(`'${esc(cat)}' 안의 QR ${n}개를 다시 나눌까요?`, '지금 카테고리 목록 전체를 기준으로 다시 골라요. 직접 고친 QR은 그대로 둬요.').then(ok => { if (ok) organize(false, cat); });
+        }
         if (act === 'traces') openTraceCleaner();
+        const unhideQr = e.target.closest('[data-unhide-qr]')?.dataset.unhideQr;
+        if (unhideQr) {
+            s.hiddenQrs = (s.hiddenQrs ?? []).filter(k => k !== unhideQr);
+            save(); renderDrawer(); openSettingsSheet();
+            toastr.success('다시 보이게 했어요.');
+        }
+        const unhide = e.target.closest('[data-unhide]')?.dataset.unhide;
+        if (unhide) {
+            s.hiddenSets = (s.hiddenSets ?? []).filter(n => n !== unhide);
+            save(); renderDrawer(); openSettingsSheet();
+            toastr.success(`'${unhide}' 세트를 다시 보이게 했어요.`);
+        }
+        if (act === 'export') exportShelf(!!sheet.querySelector('[data-exp-mine]')?.checked);
+        if (act === 'import') importShelf();
         if (act === 'cats-save') { s.categoriesText = sheet.querySelector('.qrs-cats').value; save(); renderDrawer(); toastr.success('카테고리를 저장했어요.'); }
         if (act === 'cats-reset') { sheet.querySelector('.qrs-cats').value = DEFAULT_CATEGORIES; }
     });
@@ -1200,7 +1407,7 @@ function openTraceCleaner() {
     document.getElementById('qrs_traces')?.remove();
     const c = ctx();
     const traces = findTraces();
-    const modal = el(`<div id="qrs_traces" class="qrs-modal"><div class="qrs-modal-inner">
+    const modal = el(`<div id="qrs_traces" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>🧹 예전 QR 흔적 정리</b> <small>${traces.length}개 찾음</small><button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list">
           <div class="qrs-help">책장을 쓰기 전에 돌린 QR 결과를 찾아봤어요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
@@ -1248,12 +1455,128 @@ function openTraceCleaner() {
     });
 }
 
+// ---------- clipboard ----------
+async function copyText(text) {
+    try {
+        if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+    } catch { /* fall back below */ }
+    // http on a LAN address has no clipboard API; use a temporary textarea instead
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    Object.assign(ta.style, { position: 'fixed', top: '-1000px', opacity: '0' });
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+}
+
+// ---------- export / import of organize results ----------
+function exportShelf(includeMine) {
+    const s = S();
+    const entries = [];
+    for (const set of allSets()) {
+        for (const qr of set.qrList) {
+            const key = keyOf(set, qr);
+            const m = s.meta[key];
+            if (!m) continue;
+            entries.push({ key, label: qr.label, hash: hash(qr.label + qr.message), name: m.name, desc: m.desc, cat: m.cat, result: m.result ?? '', manual: !!m.manual });
+        }
+    }
+    const data = {
+        type: 'qr-shelf-export', version: 1, exportedAt: new Date().toISOString(),
+        categoriesText: s.categoriesText,
+        setInfo: Object.fromEntries(Object.entries(s.setInfo).map(([k, v]) => [k, { scope: v.scope, world: v.world }])),
+        entries,
+        ...(includeMine ? { mine: { favorites: s.favorites, cardOrder: s.cardOrder, tabOrder: s.tabOrder, hiddenTabs: s.hiddenTabs, qrOverride: s.qrOverride } } : {}),
+    };
+    const blob = new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `QR책장_정리결과_${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    toastr.success(`정리 결과 ${entries.length}개를 내보냈어요.`);
+}
+
+function importShelf() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        let data;
+        try { data = JSON.parse(await file.text()); } catch { toastr.error('파일을 읽지 못했어요.'); return; }
+        if (data?.type !== 'qr-shelf-export' || !Array.isArray(data.entries)) { toastr.error('QR 책장에서 내보낸 파일이 아니에요.'); return; }
+        await applyImport(data);
+    });
+    input.click();
+}
+
+async function applyImport(data) {
+    const s = S();
+    const c = ctx();
+    // index local QRs by key and by content hash
+    const byKey = new Map(), byHash = new Map();
+    for (const set of allSets()) {
+        for (const qr of set.qrList) {
+            const key = keyOf(set, qr);
+            const h = hash(qr.label + qr.message);
+            byKey.set(key, h);
+            if (!byHash.has(h)) byHash.set(h, []);
+            byHash.get(h).push(key);
+        }
+    }
+    let matched = 0, skippedManual = 0, missing = 0;
+    const keyMap = new Map(); // exported key -> local key (for favorites/order)
+    for (const e of data.entries) {
+        let targets = [];
+        if (byKey.get(e.key) === e.hash) targets = [e.key];
+        else if (byHash.has(e.hash)) targets = byHash.get(e.hash);
+        if (!targets.length) { missing++; continue; }
+        keyMap.set(e.key, targets[0]);
+        for (const t of targets) {
+            if (s.meta[t]?.manual && !e.manual) { skippedManual++; continue; }
+            s.meta[t] = { name: e.name ?? '', desc: e.desc ?? '', cat: e.cat ?? '', result: e.result ?? '', hash: e.hash, ...(e.manual ? { manual: true } : {}) };
+            matched++;
+        }
+    }
+    const differentCats = data.categoriesText && data.categoriesText.trim() !== String(s.categoriesText).trim();
+    if (differentCats) {
+        const ok = await c.Popup.show.confirm('카테고리 목록도 가져올까요?', '파일의 카테고리로 바꿔야 가져온 분류가 제자리에 들어가요. 안 바꾸면 안 맞는 건 미분류로 보여요.');
+        if (ok) s.categoriesText = data.categoriesText;
+    }
+    for (const [name, info] of Object.entries(data.setInfo ?? {})) {
+        if (!api?.getSetByName(name)) continue;
+        s.setInfo[name] = { ...(s.setInfo[name] ?? {}), scope: info.scope, world: info.world };
+    }
+    if (data.mine) {
+        const mapKey = k => keyMap.get(k) ?? k;
+        const ok = await c.Popup.show.confirm('즐겨찾기와 순서도 가져올까요?', '이 기기의 즐겨찾기·카드 순서·탭 순서가 파일 내용으로 바뀌어요.');
+        if (ok) {
+            s.favorites = [...new Set((data.mine.favorites ?? []).map(mapKey))];
+            s.cardOrder = Object.fromEntries(Object.entries(data.mine.cardOrder ?? {}).map(([k, v]) => [k, v.map(mapKey)]));
+            s.tabOrder = data.mine.tabOrder ?? [];
+            s.hiddenTabs = data.mine.hiddenTabs ?? [];
+            s.qrOverride = Object.fromEntries(Object.entries(data.mine.qrOverride ?? {}).map(([k, v]) => [mapKey(k), v]));
+        }
+    }
+    save();
+    renderDrawer();
+    renderFavStrip();
+    toastr.success(`${matched}개를 가져왔어요.${missing ? ` 이 기기에 없는 QR ${missing}개는 건너뛰었어요.` : ''}${skippedManual ? ` 직접 고친 ${skippedManual}개는 그대로 뒀어요.` : ''}`, '', { timeOut: 8000 });
+}
+
 // ---------- archive viewer ----------
 function openArchive() {
     document.getElementById('qrs_archive')?.remove();
     const c = ctx();
     const store = c.chatMetadata?.qrShelfArchive ?? [];
-    const modal = el(`<div id="qrs_archive" class="qrs-modal"><div class="qrs-modal-inner">
+    const modal = el(`<div id="qrs_archive" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>📦 QR 보관함</b> <small>이 채팅 · ${store.length}개</small>
           <input type="search" class="qrs-in qrs-arch-search" placeholder="QR 이름으로 찾기">
           <button class="qrs-sheet-close" title="닫기">✕</button></div>
@@ -1272,6 +1595,7 @@ function openArchive() {
                 <div class="qrs-arch-msgs"></div>
                 <div class="qrs-actions">
                   <button class="qrs-btn qrs-btn-main" data-act="restore">↩ 채팅으로 꺼내기</button>
+                  <button class="qrs-btn" data-act="copy">📋 복사</button>
                   <button class="qrs-btn" data-act="del">🗑 지우기</button>
                 </div></details>`);
             node.addEventListener('toggle', () => {
@@ -1284,6 +1608,13 @@ function openArchive() {
                 }
             });
             node.querySelector('[data-act="restore"]').addEventListener('click', async () => { await restoreEntry(en); render(); });
+            node.querySelector('[data-act="copy"]').addEventListener('click', async () => {
+                // copy the result text only (skip the instruction message that send mode posts)
+                const msgs = en.msgs.filter(m => !m.is_user);
+                const text = (msgs.length ? msgs : en.msgs).map(m => String(m.mes ?? '').trim()).join('\n\n');
+                if (await copyText(text)) toastr.success('복사했어요.');
+                else toastr.error('복사가 막혀 있어요. 결과를 길게 눌러 직접 복사해 주세요.');
+            });
             node.querySelector('[data-act="del"]').addEventListener('click', async () => {
                 const ok = await c.Popup.show.confirm('보관함에서 지울까요?', '지우면 되돌릴 수 없어요.');
                 if (!ok) return;
@@ -1344,7 +1675,12 @@ async function askAI(systemPrompt, prompt) {
         const out = await c.ConnectionManagerRequestService.sendRequest(profileId, [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: prompt },
-        ], 6000);
+        ], 6000,
+        // Keep the profile's preset: it carries connection details such as Vertex AI's auth mode
+        // (without it Vertex falls back to "Express mode" and asks for an API key). Only its
+        // generation settings are applied, never its prompts. Ask for short thinking to stay fast.
+        { includePreset: true, includeInstruct: false },
+        { reasoning_effort: 'low' });
         res = typeof out === 'string' ? out : (out?.content ?? '');
     } else {
         res = await c.generateRaw({ systemPrompt, prompt, responseLength: 6000 });
@@ -1390,7 +1726,7 @@ function qrSystemPrompt(lang, cats) {
 function showProgress(text, ratio) {
     let p = document.getElementById('qrs_progress');
     if (!p) {
-        p = el(`<div id="qrs_progress"><div class="qrs-prog-text"></div><div class="qrs-prog-bar"><span></span></div>
+        p = el(`<div id="qrs_progress" data-bl-native-ext-colors><div class="qrs-prog-text"></div><div class="qrs-prog-bar"><span></span></div>
             <button class="qrs-mini" data-act="stop">중지</button></div>`);
         p.querySelector('[data-act="stop"]').addEventListener('click', () => { stopOrganize = true; p.querySelector('.qrs-prog-text').textContent = '이번 묶음까지만 하고 멈출게요…'; });
         document.body.append(p);
@@ -1400,7 +1736,11 @@ function showProgress(text, ratio) {
 }
 function hideProgress() { document.getElementById('qrs_progress')?.remove(); }
 
-async function organize(force) {
+/**
+ * force: re-do everything. onlyCat: re-do just the QRs currently in that category
+ * (handy after adding a new category such as 🔞 that should pull items out of an existing one).
+ */
+async function organize(force, onlyCat = null) {
     if (organizing) { toastr.info('이미 정리 중이에요.'); return; }
     if (isGenerating()) { toastr.info('생성이 끝난 뒤에 해주세요.'); return; }
     const s = S();
@@ -1410,9 +1750,10 @@ async function organize(force) {
     organizing = true; stopOrganize = false;
     closeDrawer();
     let failed = 0;
+    let firstError = '';
     try {
         // 1) set scopes
-        const sets = allSets().filter(set => force || !s.setInfo[set.name]?.scope);
+        const sets = onlyCat ? [] : allSets().filter(set => force || !s.setInfo[set.name]?.scope);
         for (let i = 0; i < sets.length && !stopOrganize; i += 15) {
             const chunk = sets.slice(i, i + 15);
             showProgress(`세트 성격 파악 중… (${Math.min(i + 15, sets.length)}/${sets.length})`, i / Math.max(sets.length, 1) * 0.15);
@@ -1428,16 +1769,21 @@ async function organize(force) {
                     if (!set) continue;
                     s.setInfo[set.name] = { ...(s.setInfo[set.name] ?? {}), scope: r.scope === 'world' ? 'world' : 'general', world: r.world || '' };
                 }
-            } catch (e) { failed++; console.error(LOG, e); }
+            } catch (e) { failed++; firstError ||= String(e?.message ?? e).slice(0, 160); console.error(LOG, e); }
             save();
         }
 
         // 2) QR labels
-        const todo = collect().filter(i => force ? (String(i.qr.message ?? '').trim() && !i.meta?.manual) : needsOrganize(i));
+        const todo = collect().filter(i => {
+            if (onlyCat) return i.section === 'general' && i.meta?.cat === onlyCat && !i.meta?.manual;
+            return force ? (String(i.qr.message ?? '').trim() && !i.meta?.manual) : needsOrganize(i);
+        });
+        if (onlyCat && !todo.length) { toastr.info(`'${onlyCat}'에 다시 정리할 QR이 없어요.`); return; }
         const size = Math.max(5, Math.min(40, Number(s.batchSize) || 20));
-        for (let i = 0; i < todo.length && !stopOrganize; i += size) {
-            const chunk = todo.slice(i, i + size);
-            showProgress(`QR 정리 중… ${Math.min(i + size, todo.length)}/${todo.length}`, 0.15 + (i / Math.max(todo.length, 1)) * 0.85);
+        const chunks = [];
+        for (let i = 0; i < todo.length; i += size) chunks.push(todo.slice(i, i + size));
+        let doneCount = 0;
+        const runChunk = async (chunk) => {
             const prompt = 'Quick Replies to organize:\n\n' + chunk.map((it, j) =>
                 `[${j + 1}] label: ${it.qr.label}${it.qr.title ? ` | tooltip: ${it.qr.title}` : ''} | set: ${it.set.name}\ncommand: ${cleanForPrompt(it.qr.message)}`).join('\n\n');
             try {
@@ -1449,16 +1795,25 @@ async function organize(force) {
                     const cat = cats.find(c => c.label === r.cat)?.label ?? cats.find(c => String(r.cat ?? '').includes(c.label) || c.label.includes(String(r.cat ?? '').trim()))?.label ?? '';
                     s.meta[it.key] = { name: String(r.name ?? '').slice(0, 30), desc: String(r.desc ?? '').slice(0, 120), cat, result: r.result === 'story' ? 'story' : (r.result === 'aside' ? 'aside' : ''), hash: hash(it.qr.label + it.qr.message) };
                 }
-            } catch (e) { failed++; console.error(LOG, e); }
+            } catch (e) { failed++; firstError ||= String(e?.message ?? e).slice(0, 160); console.error(LOG, e); }
             save();
-        }
+            doneCount += chunk.length;
+            showProgress(`QR 정리 중… ${doneCount}/${todo.length}`, 0.15 + (doneCount / Math.max(todo.length, 1)) * 0.85);
+        };
+        // several batches at once: the wait is mostly the model thinking, so parallel requests finish much sooner
+        const workers = Math.max(1, Math.min(6, Number(s.concurrency) || 3));
+        showProgress(`QR 정리 중… 0/${todo.length} (동시에 ${workers}묶음씩)`, 0.15);
+        let next = 0;
+        await Promise.all(Array.from({ length: Math.min(workers, chunks.length) }, async () => {
+            while (!stopOrganize && next < chunks.length) await runChunk(chunks[next++]);
+        }));
     } finally {
         organizing = false;
         hideProgress();
     }
     const left = collect().filter(needsOrganize).length;
     if (stopOrganize) toastr.info(`멈췄어요. 남은 QR ${left}개는 다음에 이어서 정리할 수 있어요.`);
-    else if (failed) toastr.warning(`일부 묶음이 실패했어요 (${failed}번). 남은 ${left}개는 '새 QR만 정리'로 다시 시도해 주세요.`);
+    else if (failed) toastr.warning(`일부 묶음이 실패했어요 (${failed}번). 남은 ${left}개는 '새 QR만 정리'로 다시 시도해 주세요.${firstError ? `<br><small>오류: ${esc(firstError)}</small>` : ''}`, '', { timeOut: 12000, escapeHtml: false });
     else toastr.success('정리 끝! 책장을 열어보세요 ✨');
     renderFavStrip();
 }
@@ -1501,9 +1856,14 @@ async function init() {
     });
     first(ev.MESSAGE_SENT, (id) => {
         if (!busy || !runAside || !S().hideFromMemory) return;
-        // keep it visible to the prompt (send mode needs it for /trigger), only flag it for summarizers
+        // send mode: the instruction must stay in the prompt for this run's /trigger, so it is only
+        // flagged for summarizers now and fully hidden when the run ends (markRun)
         const m = ctx().chat[Number(id)];
-        if (m) m._userHidden = true;
+        if (!m) return;
+        m._userHidden = true;
+        m.extra ??= {};
+        if (!m.extra.lm_qr) { m.extra.lm_qr = 'aside'; m._qrsLmQr = true; }
+        runInstructions.push(m);
     });
     c.eventSource.on(ev.MESSAGE_SENT, () => { if (!busy && S().autoArchive) needArchive = true; });
     const tryArchive = () => {
