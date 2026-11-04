@@ -8,6 +8,8 @@
     --qrs-line: var(--SmartThemeUnderlineColor, #888);
     position: relative;
     width: 100%;
+    height: 0;              /* takes no room: the chat shows right up to the input box */
+    z-index: 30;
     color: var(--qrs-fg);
 }
 
@@ -20,11 +22,17 @@ body.qrs-no-icon #qrs_icon { display: none !important; }
 
 /* handle: thin pill like a slider tab */
 #qrs_handle {
+    /* floats over the bottom edge of the chat, transparent like a slider tab */
+    position: absolute;
+    left: 50%;
+    bottom: 0;
+    transform: translateX(-50%);
+    width: 90px;
+    height: 14px;
     display: flex;
     justify-content: center;
     align-items: center;
-    height: 9px;
-    padding: 2px 0;
+    background: transparent;
     cursor: pointer;
     touch-action: manipulation;
 }
@@ -41,9 +49,15 @@ body.qrs-no-icon #qrs_icon { display: none !important; }
 
 /* favorites strip */
 #qrs_favstrip {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 14px;
     display: flex;
     gap: 6px;
-    padding: 0 8px 4px;
+    padding: 0 8px 2px;
+    background: transparent;
+    pointer-events: none;
     overflow-x: auto;
     scrollbar-width: none;
 }
@@ -52,6 +66,7 @@ body[data-qrs-fav-rows="2"] #qrs_favstrip { flex-wrap: wrap; max-height: 70px; o
 body[data-qrs-fav-rows="0"] #qrs_favstrip,
 #qrs_favstrip.qrs-hidden { display: none; }
 .qrs-favchip {
+    pointer-events: auto;
     flex: 0 0 auto;
     padding: 3px 10px;
     border-radius: 999px;
@@ -70,8 +85,7 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
     position: absolute;
     left: 0;
     right: 0;
-    bottom: 100%;
-    margin-bottom: 4px;
+    bottom: 16px;
     max-height: min(65vh, 560px);
     display: flex;
     flex-direction: column;
@@ -488,3 +502,5 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
 }
 .qrs-ghost .qrs-card-name { color: var(--SmartThemeEmColor, #888); font-size: 0.75em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qrs-ghost .qrs-card-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#qrs_root.qrs-open #qrs_favstrip { visibility: hidden; }
