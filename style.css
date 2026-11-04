@@ -311,6 +311,8 @@ body[data-qrs-fav-rows="0"] #qrs_favstrip,
 
 /* QR result bar in chat */
 .mes.qrs-pending .mes_block { border-left: 3px solid var(--qrs-accent); padding-left: 14px !important; box-sizing: border-box; }
+/* some themes zero the message padding with very specific !important rules; win over them */
+:root:not(#qrs-a):not(#qrs-b):not(#qrs-c) body #chat#chat#chat .mes.qrs-pending .mes_block { padding-left: 14px !important; }
 .qrs-runbar {
     display: flex;
     flex-wrap: wrap;
