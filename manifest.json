@@ -1,0 +1,9 @@
+{
+    "display_name": "QR 책장",
+    "loading_order": 5,
+    "js": "index.js",
+    "css": "style.css",
+    "version": "1.3.0",
+    "auto_update": false,
+    "generate_interceptor": "qrShelfInterceptor"
+}
