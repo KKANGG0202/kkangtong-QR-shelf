@@ -1558,7 +1558,7 @@ async function loadWorldNames(sheet, reopen) {
 }
 
 // ---------- memory cleanup for old QR results ----------
-const QR_PROMPT_RE = /<\s*\/?\s*(system|instruction)\s*>|pause (the|this) (story|role-?play|rp|current scenario|narrative|conversation)|let'?s pause|\booc mode\b|\[\s*ooc|stop role-?playing|roleplay suspended|story progression halted/i;
+const QR_PROMPT_RE = /<\s*\/?\s*(system|instruction|format|ooc)\s*>|pause (the|this) (story|role-?play|rp|current scenario|narrative|conversation)|let'?s pause|\booc mode\b|\[\s*ooc|stop role-?playing|roleplay suspended|story progression halted/i;
 
 function findTraces(includeHidden = false) {
     const chat = ctx().chat;
@@ -1569,19 +1569,27 @@ function findTraces(includeHidden = false) {
     const bots = chat.slice(1).filter(m => m && !m.is_user && !m.is_system);
     const withRecord = bots.filter(m => m.extra?.api || m.extra?.model).length;
     const recordsReliable = bots.length >= 4 && withRecord / bots.length >= 0.7;
+    // A bot message posted under a name other than the character's is usually a /sendas QR result.
+    // Group chats have many speakers, so this check is off there.
+    const c = ctx();
+    const charName = !c.groupId ? String(c.name2 ?? '').trim() : '';
+    const strong = [];
+    const weak = [];
     for (let i = 1; i < chat.length; i++) {
         const m = chat[i];
         if (!m || m.extra?.qrShelf || m.extra?.type) continue;
-        // Only messages that clearly look like a QR instruction (and the reply right after one) are listed.
-        // Hidden messages and back-to-back bot messages are normal chat use, so they are never guessed at.
         // Nothing is pre-checked: the user decides every message.
-        const prev = out[out.length - 1];
-        if (m.is_user && QR_PROMPT_RE.test(m.mes ?? '')) out.push({ i, reason: 'QR 지시문 같아요', checked: false });
-        else if (!m.is_user && prev?.i === i - 1 && prev.reason === 'QR 지시문 같아요') out.push({ i, reason: '위 지시문의 답', checked: false });
-        else if (recordsReliable && !m.is_user && !m.extra?.api && !m.extra?.model) out.push({ i, reason: 'AI 생성 기록이 없어요 (/sendas로 보낸 QR 결과일 수도)', checked: false });
-        else if (includeHidden && m.is_system && !m._summarizedHidden) out.push({ i, reason: '내가 숨긴 메시지', checked: false });
+        const prev = strong[strong.length - 1];
+        const looksQr = QR_PROMPT_RE.test(m.mes ?? '');
+        if (m.is_user && looksQr) strong.push({ i, reason: 'QR 지시문 같아요', checked: false });
+        else if (!m.is_user && looksQr) strong.push({ i, reason: 'QR 결과 같아요 (지시문 태그가 들어있어요)', checked: false });
+        else if (!m.is_user && prev?.i === i - 1 && prev.reason === 'QR 지시문 같아요') strong.push({ i, reason: '위 지시문의 답', checked: false });
+        else if (!m.is_user && charName && m.name && String(m.name).trim() !== charName) strong.push({ i, reason: `캐릭터와 다른 이름으로 올라온 메시지 (/sendas QR일 수도)`, checked: false });
+        else if (recordsReliable && !m.is_user && !m.extra?.api && !m.extra?.model) strong.push({ i, reason: 'AI 생성 기록이 없어요 (/sendas로 보낸 QR 결과일 수도)', checked: false });
+        // Plain hidden messages carry no QR signal; they are listed separately below the real matches.
+        else if (includeHidden && m.is_system && !m._summarizedHidden) weak.push({ i, reason: '내가 숨긴 메시지 (QR 흔적은 안 보여요, 직접 확인해 주세요)', checked: false, weak: true });
     }
-    return out;
+    return strong.concat(weak);
 }
 
 function openTraceCleaner(includeHidden = false) {
