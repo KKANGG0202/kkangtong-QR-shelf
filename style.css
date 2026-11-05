@@ -36,6 +36,16 @@ body.qrs-hide-qrbar #qr--bar > .qr--buttons:has(> [id^="script_container_"]) { d
 body.qrs-hide-qrbar #qr--bar > .qr--buttons:has(> [id^="script_container_"]) > :not([id^="script_container_"]) { display: none !important; }
 /* nothing left to show: drop the bar itself */
 body.qrs-hide-qrbar #qr--bar:not(:has([id^="script_container_"])) { display: none !important; }
+/* script buttons from every script flow in one wrapping, centered row (CSS only) */
+body.qrs-hide-qrbar #qr--bar,
+body.qrs-hide-qrbar #qr--bar > .qr--buttons:has(> [id^="script_container_"]) {
+    flex-flow: row wrap !important;
+    justify-content: center;
+    align-items: center;
+    gap: 5px;
+}
+body.qrs-hide-qrbar #qr--bar > .qr--buttons:has(> [id^="script_container_"]) { width: 100%; }
+body.qrs-hide-qrbar #qr--bar [id^="script_container_"] { display: contents !important; }
 body.qrs-no-handle #qrs_handle { display: none; }
 body.qrs-no-icon #qrs_icon { display: none !important; }
 
