@@ -28,8 +28,14 @@ body.salty :is(#qrs_root, .qrs-modal, #qrs_progress, .qrs-ghost, .qrs-runbar, .m
     color: var(--qrs-fg);
 }
 
-body.qrs-hide-qrbar #qr--bar,
+/* Hide the built-in QR buttons but keep Tavern Helper script buttons (div#script_container_<id> inside #qr--bar) */
 body.qrs-hide-qrbar #qr_toggle_button { display: none !important; }
+body.qrs-hide-qrbar #qr--bar > :not([id^="script_container_"]) { display: none !important; }
+/* "combined" QR mode: script containers sit inside the first .qr--buttons next to the QR buttons */
+body.qrs-hide-qrbar #qr--bar > .qr--buttons:has(> [id^="script_container_"]) { display: flex !important; }
+body.qrs-hide-qrbar #qr--bar > .qr--buttons:has(> [id^="script_container_"]) > :not([id^="script_container_"]) { display: none !important; }
+/* nothing left to show: drop the bar itself */
+body.qrs-hide-qrbar #qr--bar:not(:has([id^="script_container_"])) { display: none !important; }
 body.qrs-no-handle #qrs_handle { display: none; }
 body.qrs-no-icon #qrs_icon { display: none !important; }
 
