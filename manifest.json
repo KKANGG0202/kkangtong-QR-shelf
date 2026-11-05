@@ -3,7 +3,7 @@
     "loading_order": 5,
     "js": "index.js",
     "css": "style.css",
-    "version": "1.17.0",
+    "version": "1.18.0",
     "auto_update": false,
     "generate_interceptor": "qrShelfInterceptor"
 }

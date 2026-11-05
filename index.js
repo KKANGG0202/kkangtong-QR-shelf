@@ -34,6 +34,8 @@ const DEFAULTS = {
     batchSize: 20,
     concurrency: 3,            // organize batches sent at the same time
     autoArchive: true,
+    qrLang: '',                // language for QR results ('' = leave it to the model, 'custom' = qrLangCustom)
+    qrLangCustom: '',
     archiveSystem: false,      // also archive /sys messages
     excludePending: true,      // keep pending QR results out of the next prompt
     sendMode: false,           // rewrite "/gen ... | /sendas" into "/send ... | /trigger"
@@ -359,6 +361,33 @@ function autoAside(item) {
     return QR_PROMPT_RE.test(String(item.qr.message ?? ''));
 }
 
+// ---------- output language for QR results ----------
+const LANG_KEY = 'qr-shelf-lang';
+const LANGS = [['English', '영어'], ['Korean', '한국어'], ['Japanese', '일본어'], ['Simplified Chinese', '중국어(간체)']];
+/** Language this QR's result should be written in, or '' to leave it alone. */
+function langFor(item) {
+    const s = S();
+    const o = s.qrOverride[item.key]?.lang;
+    if (o === 'none') return '';
+    if (o) return o;
+    if (s.qrLang === 'custom') return String(s.qrLangCustom ?? '').trim();
+    return s.qrLang || '';
+}
+function langLabel(v) {
+    return LANGS.find(l => l[0] === v)?.[1] ?? v;
+}
+/** Prompt line read by the model during the QR run only (removed again in runQr's finally). */
+function setLangPrompt(lang) {
+    const c = ctx();
+    if (typeof c.setExtensionPrompt !== 'function') return false;
+    const text = lang
+        ? `[Output language: write your entire response in ${lang}, even if the instructions or the user's message above are written in another language. Keep proper names as they are.]`
+        : '';
+    // position 1 = in chat, depth 0 = right after the last message, role 0 = system
+    c.setExtensionPrompt(LANG_KEY, text, 1, 0, false, 0);
+    return true;
+}
+
 async function runQr(item) {
     const { set, qr, key } = item;
     if (busy) { toastr.info('앞의 QR이 아직 실행 중이에요.'); return; }
@@ -377,8 +406,11 @@ async function runQr(item) {
     let usedLastVar = false;
     runInstructions = [];
     let restoreProfile = null;
+    const lang = langFor(item);
+    let langSet = false;
     try {
         restoreProfile = await switchToQrProfile();
+        if (lang) langSet = setLangPrompt(lang);
         let altered = prepareMessage(qr.message);
         // {{lastMessage}} doesn't skip hidden messages, so it would read a previous QR result still
         // waiting in the chat. Point it at the last real story message instead.
@@ -397,6 +429,7 @@ async function runQr(item) {
         console.error(LOG, e);
         toastr.error(`QR 실행 중 오류: ${e?.message ?? e}`);
     } finally {
+        if (langSet) { try { setLangPrompt(''); } catch { /* ignore */ } }
         if (restoreProfile) await switchProfileByName(restoreProfile);
         busy = false;
         if (usedLastVar) { try { c.variables.local.del(LAST_VAR); } catch { /* ignore */ } }
@@ -1255,6 +1288,11 @@ function openDetail(item) {
           <option value="always" ${s.qrOverride[key]?.archive === 'always' ? 'selected' : ''}>항상 보관함으로</option>
           <option value="never" ${s.qrOverride[key]?.archive === 'never' ? 'selected' : ''}>항상 채팅에 남기기 (이야기의 일부)</option>
         </select></label>
+        <label>결과 언어 <select class="qrs-in" data-f="lang">
+          <option value="">기본 설정 따르기 (${(() => { const d = s.qrLang === 'custom' ? String(s.qrLangCustom ?? '').trim() : s.qrLang; return d ? esc(langLabel(d)) : '안 정함'; })()})</option>
+          <option value="none" ${s.qrOverride[key]?.lang === 'none' ? 'selected' : ''}>이 QR은 안 정함 (AI 마음대로)</option>
+          ${LANGS.map(([v, l]) => `<option value="${v}" ${s.qrOverride[key]?.lang === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></label>
         <label>이 세트(${esc(set.name)})는 <select class="qrs-in" data-f="scope">
           <option value="general" ${!info.owner && info.scope !== 'world' ? 'selected' : ''}>공용 (카테고리로 정리)</option>
           <option value="world" ${!info.owner && info.scope === 'world' ? 'selected' : ''}>🌍 세계관 전용</option>
@@ -1289,7 +1327,10 @@ function openDetail(item) {
         if (act === 'savemeta') {
             const v = f => sheet.querySelector(`[data-f="${f}"]`).value;
             s.meta[key] = { ...meta, name: v('name').trim(), desc: v('desc').trim(), cat: v('cat'), hash: meta.hash ?? hash(qr.label + qr.message), manual: true };
-            if (v('archive') !== 'auto') s.qrOverride[key] = { archive: v('archive') }; else delete s.qrOverride[key];
+            const ov = { ...(s.qrOverride[key] ?? {}) };
+            if (v('archive') !== 'auto') ov.archive = v('archive'); else delete ov.archive;
+            if (v('lang')) ov.lang = v('lang'); else delete ov.lang;
+            if (Object.keys(ov).length) s.qrOverride[key] = ov; else delete s.qrOverride[key];
             const scope = v('scope');
             const ni = { ...(s.setInfo[set.name] ?? {}) };
             if (scope === 'owner') { ni.owner = curAv; } else { delete ni.owner; ni.scope = scope; }
@@ -1353,6 +1394,17 @@ function openSettingsSheet() {
         <div class="qrs-help">한 줄에 하나씩 써요. <code>이름 : 이런 QR이 들어가요</code> 처럼 콜론 뒤에 설명을 붙이면 AI가 더 잘 나눠요. 바꾼 뒤 <b>새 QR만 정리</b>를 누르면 안 맞는 것만 다시 나눠요.</div>
         <textarea class="qrs-in qrs-cats" rows="6">${esc(s.categoriesText)}</textarea>
         <div class="qrs-actions"><button class="qrs-btn" data-act="cats-save">카테고리 저장</button><button class="qrs-btn" data-act="cats-reset">기본값으로</button></div>
+      </div>
+      <div class="qrs-section">
+        <div class="qrs-section-title">🌐 QR 결과 언어</div>
+        <div class="qrs-help">책장에서 QR을 돌릴 때만 "이 언어로 써줘"를 AI에게 몰래 붙여요. 한글로 상황을 써도 영어로 받거나, 영챗하면서 QR만 한글로 받을 수 있어요. QR마다 다르게 하고 싶으면 QR을 길게 눌러 <b>이름·카테고리 바꾸기 → 결과 언어</b>에서 바꿔요.</div>
+        <label><select class="qrs-in" data-k="qrLang">
+          <option value="" ${!s.qrLang ? 'selected' : ''}>안 정함 (AI 마음대로)</option>
+          ${LANGS.map(([v, l]) => `<option value="${v}" ${s.qrLang === v ? 'selected' : ''}>${l}</option>`).join('')}
+          <option value="custom" ${s.qrLang === 'custom' ? 'selected' : ''}>직접 쓰기…</option>
+        </select></label>
+        <label>직접 쓰기 <small>(위에서 '직접 쓰기'를 골랐을 때, 영어로 예: Spanish, Korean with English names)</small>
+          <input class="qrs-in" data-k="qrLangCustom" value="${esc(s.qrLangCustom ?? '')}" placeholder="Spanish"></label>
       </div>
       <div class="qrs-section">
         <div class="qrs-section-title">🔌 QR 실행용 연결</div>
