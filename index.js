@@ -26,7 +26,7 @@ const DEFAULTS = {
     recent: [],                // most recently run card keys (newest first)
     cardOrder: {},             // "tab|group" -> [card keys] user-defined order inside a tab
     hideQrBar: true,
-    favRows: 1,                // 0..2 rows of favorites under the handle
+    favRows: 0,                // 0..2 rows of favorites under the handle (off for new installs; saved settings keep theirs)
     categoriesText: DEFAULT_CATEGORIES,
     outputLang: 'Korean',
     charWord: '깡통',          // how names/descriptions call the bot ('' = real name)
@@ -817,12 +817,12 @@ function tabsFor(items) {
     const s = S();
     const tabs = [];
     if (s.favorites.length) tabs.push({ id: 'fav', label: '⭐ 즐겨찾기' });
+    if (s.recent?.length) tabs.push({ id: 'recent', label: '🕘 최근' });
     if (items.some(i => i.section === 'current')) tabs.push({ id: 'current', label: '🤖 이 봇' });
     for (const c of categories()) tabs.push({ id: `cat:${c.label}`, label: c.label });
     const catLabels = new Set(categories().map(c => c.label));
     if (items.some(i => i.section === 'general' && !(i.meta && catLabels.has(i.meta.cat)))) tabs.push({ id: 'uncat', label: '❔ 미분류' });
     if (items.some(i => i.section === 'world')) tabs.push({ id: 'world', label: '🌍 세계관' });
-    if (s.recent?.length) tabs.push({ id: 'recent', label: '🕘 최근' });
     tabs.push({ id: 'all', label: '📚 전체' });
     return orderTabs(tabs);
 }
@@ -839,11 +839,11 @@ function orderTabs(tabs, includeHidden = false) {
 function allTabDefs() {
     return [
         { id: 'fav', label: '⭐ 즐겨찾기' },
+        { id: 'recent', label: '🕘 최근' },
         { id: 'current', label: '🤖 이 봇' },
         ...categories().map(c => ({ id: `cat:${c.label}`, label: c.label })),
         { id: 'uncat', label: '❔ 미분류' },
         { id: 'world', label: '🌍 세계관' },
-        { id: 'recent', label: '🕘 최근' },
         { id: 'all', label: '📚 전체' },
     ];
 }
@@ -1673,11 +1673,11 @@ function openTraceCleaner(includeHidden = false) {
           <div class="qrs-help">책장을 쓰기 전에 돌린 QR 지시문·결과로 보이는 메시지를 찾았어요. <b>미리 체크된 건 없어요.</b> 꼭 내용을 펼쳐 보고 QR이 맞는 것만 골라주세요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
           그러면 Memoria는 그 턴에서 뽑은 기억을 스스로 지우고, 시나리오 자동요약도 그 메시지의 요약을 지워요. 보관함에서 언제든 다시 꺼낼 수 있어요.</div>
           <label class="qrs-trace"><input type="checkbox" data-act="hidden" ${includeHidden ? 'checked' : ''}><span>👁 내가 숨긴 메시지도 목록에 보여주기</span></label>
-          ${traces.length ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
+          ${traces.some(t => !t.weak) ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b> <small>(QR 흔적이 보이는 것)</small></span></label>' : ''}
           <div class="qrs-trace-list">${traces.length ? traces.map((t, k) => {
             const m = c.chat[t.i];
             const divider = t.weak && !traces[k - 1]?.weak
-                ? '<div class="qrs-help"><b>👁 그냥 숨긴 메시지</b> · QR 흔적은 못 찾았어요. 전체 선택하면 여기도 체크되니, QR이 아닌 건 꼭 빼주세요.</div>' : '';
+                ? '<div class="qrs-help"><b>👁 그냥 숨긴 메시지</b> · QR 흔적은 못 찾았어요. 내가 직접 숨긴 일반 메시지일 수 있으니 꼭 보고 골라주세요.</div><label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all-weak"><span><b>숨긴 메시지 전체 선택</b></span></label>' : '';
             return `${divider}<label class="qrs-trace"><input type="checkbox" data-k="${k}" ${t.weak ? 'data-weak="1"' : ''} ${t.checked ? 'checked' : ''}>
               <span><b>#${t.i}</b> ${esc(m.name)} <small>· ${esc(t.reason)}</small><br><span class="qrs-trace-text">${esc(String(m.mes ?? '').replace(/\s+/g, ' ').slice(0, 120))}</span></span></label>`;
         }).join('') : '<div class="qrs-empty">찾은 흔적이 없어요 👍</div>'}</div>
@@ -1688,15 +1688,18 @@ function openTraceCleaner(includeHidden = false) {
     modal.querySelector('.qrs-sheet-close').addEventListener('click', () => modal.remove());
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
     modal.querySelector('input[data-act="hidden"]').addEventListener('change', e => openTraceCleaner(e.target.checked));
-    const all = modal.querySelector('input[data-act="all"]');
-    // "select all" covers every listed message (plain hidden ones too); the user unticks what isn't a QR
-    const boxes = () => [...modal.querySelectorAll('input[data-k]')];
-    all?.addEventListener('change', () => boxes().forEach(b => { b.checked = all.checked; }));
+    // two separate "select all" boxes: one for messages with a QR signal, one for plain hidden messages
+    const groups = [
+        [modal.querySelector('input[data-act="all"]'), () => [...modal.querySelectorAll('input[data-k]:not([data-weak])')]],
+        [modal.querySelector('input[data-act="all-weak"]'), () => [...modal.querySelectorAll('input[data-k][data-weak]')]],
+    ].filter(([box]) => box);
+    for (const [box, boxes] of groups) box.addEventListener('change', () => boxes().forEach(b => { b.checked = box.checked; }));
     modal.querySelector('.qrs-trace-list')?.addEventListener('change', () => {
-        if (!all) return;
-        const n = boxes().filter(b => b.checked).length;
-        all.checked = n === boxes().length;
-        all.indeterminate = n > 0 && n < boxes().length;
+        for (const [box, boxes] of groups) {
+            const n = boxes().filter(b => b.checked).length;
+            box.checked = n > 0 && n === boxes().length;
+            box.indeterminate = n > 0 && n < boxes().length;
+        }
     });
     modal.querySelector('[data-act="go"]')?.addEventListener('click', async () => {
         if (isGenerating() || busy) { toastr.info('생성이 끝난 뒤에 해주세요.'); return; }
