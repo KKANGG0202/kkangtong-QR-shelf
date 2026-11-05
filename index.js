@@ -1560,6 +1560,25 @@ async function loadWorldNames(sheet, reopen) {
 // ---------- memory cleanup for old QR results ----------
 const QR_PROMPT_RE = /<\s*\/?\s*(system|instruction|format|ooc)\s*>|pause (the|this) (story|role-?play|rp|current scenario|narrative|conversation)|let'?s pause|\booc mode\b|\[\s*ooc|stop role-?playing|roleplay suspended|story progression halted/i;
 
+const OLD_TRACE_NAME = '예전 QR 흔적';
+/** A short title for an old QR result, taken from its first lines (tags and filler words removed). */
+function traceTitle(msgs) {
+    const pick = msgs.find(m => !m.is_user) ?? msgs[0];
+    let t = String(pick?.mes ?? '');
+    try { t = ctx().substituteParams(t); } catch { /* keep the raw text */ }
+    t = t.replace(/<[^>]*>/g, ' ')                 // <System>, <Format>, html
+        .replace(/[*_#>`~|[\]]+/g, ' ')            // markdown marks
+        .replace(/\s+/g, ' ').trim()
+        .replace(/^(okay|ok|sure|alright|certainly)[,!.]?\s+/i, '')
+        .replace(/^(here is|here's|here are)\s+/i, '')
+        .replace(/^(a|an|the)\s+/i, '');
+    const cut = t.search(/[.!?…:,\n]|\s-\s/);
+    if (cut > 3) t = t.slice(0, cut);
+    t = t.trim();
+    if (t.length > 40) t = `${t.slice(0, 40).trim()}…`;
+    return t;
+}
+
 function findTraces(includeHidden = false) {
     const chat = ctx().chat;
     const out = [];
@@ -1599,13 +1618,15 @@ function openTraceCleaner(includeHidden = false) {
     const modal = el(`<div id="qrs_traces" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>🧹 예전 QR 흔적 정리</b> <small>${traces.length}개 찾음</small><button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list">
-          <div class="qrs-help">책장을 쓰기 전에 돌린 QR 지시문과 그 바로 다음 답만 찾았어요. <b>미리 체크된 건 없어요.</b> 꼭 내용을 펼쳐 보고 QR이 맞는 것만 골라주세요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
+          <div class="qrs-help">책장을 쓰기 전에 돌린 QR 지시문·결과로 보이는 메시지를 찾았어요. <b>미리 체크된 건 없어요.</b> 꼭 내용을 펼쳐 보고 QR이 맞는 것만 골라주세요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
           그러면 Memoria는 그 턴에서 뽑은 기억을 스스로 지우고, 시나리오 자동요약도 그 메시지의 요약을 지워요. 보관함에서 언제든 다시 꺼낼 수 있어요.</div>
           <label class="qrs-trace"><input type="checkbox" data-act="hidden" ${includeHidden ? 'checked' : ''}><span>👁 내가 숨긴 메시지도 목록에 보여주기</span></label>
-          ${traces.length ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
+          ${traces.some(t => !t.weak) ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
           <div class="qrs-trace-list">${traces.length ? traces.map((t, k) => {
             const m = c.chat[t.i];
-            return `<label class="qrs-trace"><input type="checkbox" data-k="${k}" ${t.checked ? 'checked' : ''}>
+            const divider = t.weak && !traces[k - 1]?.weak
+                ? '<div class="qrs-help"><b>👁 그냥 숨긴 메시지</b> · QR 흔적은 못 찾았어요. 전체 선택에 안 들어가니 하나씩 보고 골라주세요.</div>' : '';
+            return `${divider}<label class="qrs-trace"><input type="checkbox" data-k="${k}" ${t.weak ? 'data-weak="1"' : ''} ${t.checked ? 'checked' : ''}>
               <span><b>#${t.i}</b> ${esc(m.name)} <small>· ${esc(t.reason)}</small><br><span class="qrs-trace-text">${esc(String(m.mes ?? '').replace(/\s+/g, ' ').slice(0, 120))}</span></span></label>`;
         }).join('') : '<div class="qrs-empty">찾은 흔적이 없어요 👍</div>'}</div>
           ${traces.length ? '<div class="qrs-actions"><button class="qrs-btn qrs-btn-main" data-act="go">체크한 것 보관함으로</button></div>' : ''}
@@ -1616,7 +1637,8 @@ function openTraceCleaner(includeHidden = false) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
     modal.querySelector('input[data-act="hidden"]').addEventListener('change', e => openTraceCleaner(e.target.checked));
     const all = modal.querySelector('input[data-act="all"]');
-    const boxes = () => [...modal.querySelectorAll('input[data-k]')];
+    // "select all" only covers messages with a QR signal; plain hidden messages are picked one by one
+    const boxes = () => [...modal.querySelectorAll('input[data-k]:not([data-weak])')];
     all?.addEventListener('change', () => boxes().forEach(b => { b.checked = all.checked; }));
     modal.querySelector('.qrs-trace-list')?.addEventListener('change', () => {
         if (!all) return;
@@ -1639,13 +1661,14 @@ function openTraceCleaner(includeHidden = false) {
         }
         for (const g of groups) {
             const run = `old${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+            const name = traceTitle(g.map(i => c.chat[i])) || OLD_TRACE_NAME;
             const msgs = g.map(i => {
                 const msg = structuredClone(c.chat[i]);
                 msg.extra ??= {};
-                msg.extra.qrShelf = { state: 'archived', run, label: '🧹', name: '예전 QR 흔적', set: '' };
+                msg.extra.qrShelf = { state: 'archived', run, label: '🧹', name, set: '' };
                 return msg;
             });
-            store.push({ run, ts: Date.now(), key: null, label: '🧹', name: '예전 QR 흔적', set: '', msgs });
+            store.push({ run, ts: Date.now(), key: null, label: '🧹', name, set: '', msgs });
         }
         await c.saveMetadata();
         await cutIndices(picked);
@@ -1888,11 +1911,32 @@ function archMsgNode(m, en) {
     return node;
 }
 
+/** "QR 보관함" in the wand (extensions) menu, so the archive opens without going through the shelf. */
+function addWandItem() {
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu || document.getElementById('qrs_wand_archive')) return;
+    const item = el(`<div id="qrs_wand_archive" class="list-group-item flex-container flexGap5 interactable" tabindex="0" title="이 채팅의 QR 보관함 열기">
+        <div class="fa-solid fa-box-archive extensionsMenuExtensionButton"></div><span>QR 보관함</span></div>`);
+    item.addEventListener('click', () => {
+        try { globalThis.$?.('#extensionsMenu').fadeOut(150); } catch { /* menu closes on its own */ }
+        openArchive();
+    });
+    menu.append(item);
+}
+
 function openArchive() {
     document.getElementById('qrs_archive')?.remove();
     loadTranslationOnly();
     const c = ctx();
     const store = c.chatMetadata?.qrShelfArchive ?? [];
+    // entries moved by older builds were all called "예전 QR 흔적"; give them a name from their content
+    let renamed = 0;
+    for (const en of store) {
+        if (en.label !== '🧹' || en.name !== OLD_TRACE_NAME || !en.msgs?.length) continue;
+        const t = traceTitle(en.msgs);
+        if (t) { en.name = t; renamed++; }
+    }
+    if (renamed) c.saveMetadata();
     const modal = el(`<div id="qrs_archive" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>📦 QR 보관함</b> <small class="qrs-arch-count">이 채팅 · ${store.length}개</small>
           <input type="search" class="qrs-in qrs-arch-search" placeholder="QR 이름으로 찾기">
@@ -1903,13 +1947,16 @@ function openArchive() {
     const render = () => {
         const q = modal.querySelector('.qrs-arch-search').value.trim().toLowerCase();
         renderArchiveBadge();
-        const entries = [...store].reverse().filter(en => !q || [en.label, en.name, en.set].some(v => String(v ?? '').toLowerCase().includes(q)));
+        // newest first, starred entries on top
+        const entries = [...store].reverse()
+            .filter(en => !q || [en.label, en.name, en.set].some(v => String(v ?? '').toLowerCase().includes(q)))
+            .sort((a, b) => (b.fav ? 1 : 0) - (a.fav ? 1 : 0));
         if (!entries.length) { list.innerHTML = '<div class="qrs-empty">보관함이 비어 있어요.</div>'; return; }
         list.innerHTML = '';
         for (const en of entries) {
             const date = new Date(en.ts).toLocaleString();
-            const node = el(`<details class="qrs-arch-item">
-                <summary><span class="qrs-arch-label">${esc(en.label)}</span> ${esc(displayText(en.name) || '')}<small>${esc(date)}</small></summary>
+            const node = el(`<details class="qrs-arch-item ${en.fav ? 'is-fav' : ''}">
+                <summary><button class="qrs-arch-star ${en.fav ? 'is-on' : ''}" data-act="star" title="즐겨찾기">⭐</button><span class="qrs-arch-label">${esc(en.label)}</span> ${esc(displayText(en.name) || '')}<small>${esc(date)}</small></summary>
                 <div class="qrs-arch-msgs"></div>
                 <div class="qrs-actions">
                   <button class="qrs-btn qrs-btn-main" data-act="restore">↩ 채팅으로 꺼내기</button>
@@ -1922,6 +1969,13 @@ function openArchive() {
                 const box = node.querySelector('.qrs-arch-msgs');
                 if (box.childElementCount) return;
                 for (const m of en.msgs) box.append(archMsgNode(m, en));
+            });
+            node.querySelector('[data-act="star"]').addEventListener('click', async e => {
+                // inside <summary>: don't open/close the entry
+                e.preventDefault();
+                e.stopPropagation();
+                if (en.fav) delete en.fav; else en.fav = true;
+                await c.saveMetadata(); render();
             });
             node.querySelector('[data-act="restore"]').addEventListener('click', async () => { await restoreEntry(en); render(); });
             node.querySelector('[data-act="copy"]').addEventListener('click', async () => {
@@ -2163,6 +2217,7 @@ async function init() {
     buildRoot();
     decorateChat();
     addMesButtons();
+    addWandItem();
 
     const ev = c.eventTypes;
     c.eventSource.on(ev.CHAT_CHANGED, () => { currentTab = null; drawerDirty = true; needArchive = false; buildRoot(); applyLayout(); decorateChat(); addMesButtons(); if (!document.getElementById('qrs_drawer')?.classList.contains('qrs-hidden')) renderDrawer(); });
