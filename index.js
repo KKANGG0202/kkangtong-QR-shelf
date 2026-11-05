@@ -16,6 +16,7 @@ const DEFAULT_CATEGORIES = [
 
 const DEFAULTS = {
     openMode: 'handle',        // 'handle' | 'icon'
+    swipeOpen: true,           // handle mode: swipe the handle up to open, swipe the drawer's grab bar down to close
     handlePos: 'auto',         // 'auto' | 'center' | 'left' | 'right'
     profileId: '',             // connection profile for organizing ('' = current API)
     qrProfileId: '',           // connection profile to switch to while a QR runs ('' = stay as is)
@@ -684,7 +685,9 @@ function buildRoot() {
         }
         recheck();
     }).observe(form, { childList: true });
-    root.querySelector('#qrs_handle').addEventListener('click', toggleDrawer);
+    const handle = root.querySelector('#qrs_handle');
+    handle.addEventListener('click', () => { if (!justSwiped()) toggleDrawer(); });
+    bindSwipe(handle, -1, () => openDrawer());
 
     if (!document.getElementById('qrs_icon')) {
         const icon = el('<div id="qrs_icon" class="fa-solid fa-layer-group interactable" tabindex="0" title="QR 책장"></div>');
@@ -735,6 +738,7 @@ function applyLayout() {
     document.body.classList.toggle('qrs-hide-qrbar', !!s.hideQrBar);
     document.body.classList.toggle('qrs-no-handle', s.openMode === 'icon');
     document.body.classList.toggle('qrs-no-icon', s.openMode === 'handle');
+    document.body.classList.toggle('qrs-swipe', s.swipeOpen !== false && s.openMode !== 'icon');
     document.body.dataset.qrsFavRows = String(s.favRows);
     document.body.dataset.qrsHandlePos = handlePos();
     renderFavStrip();
@@ -750,6 +754,31 @@ function handlePos() {
         const n = document.querySelector(sel);
         return n && getComputedStyle(n).display !== 'none';
     }) ? 'left' : 'center';
+}
+
+// ---------- swipe to open / close (handle mode) ----------
+let lastSwipe = 0;
+const justSwiped = () => Date.now() - lastSwipe < 450; // the tap that ends a swipe must not toggle again
+/** Calls onSwipe when the pointer moves mostly vertically by 30px+ in `dir` (-1 = up, 1 = down). */
+function bindSwipe(node, dir, onSwipe) {
+    let start = null;
+    node.addEventListener('pointerdown', e => {
+        if (!document.body.classList.contains('qrs-swipe')) return;
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
+        start = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        try { node.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+    });
+    const end = e => {
+        if (!start || start.id !== e.pointerId) return;
+        const dx = e.clientX - start.x, dy = e.clientY - start.y;
+        start = null;
+        if (e.type !== 'pointerup') return;
+        // any real drag (even a sideways or wrong-way one) is not a tap
+        if (Math.hypot(dx, dy) > 10) lastSwipe = Date.now();
+        if (Math.abs(dy) >= 30 && Math.abs(dy) > Math.abs(dx) * 1.5 && Math.sign(dy) === dir) onSwipe();
+    };
+    node.addEventListener('pointerup', end);
+    node.addEventListener('pointercancel', end);
 }
 
 function toggleDrawer() {
@@ -927,6 +956,7 @@ function renderDrawer(force = false) {
     const unorganized = items.filter(i => needsOrganize(i)).length;
 
     d.innerHTML = `
+      <div class="qrs-grab" title="아래로 쓸어내려 닫기"><span></span></div>
       <div class="qrs-top">
         <div class="qrs-search"><i class="fa-solid fa-magnifying-glass"></i>
           <input type="search" placeholder="QR 검색 (이름·설명·세트)" value="${esc(searchText)}"></div>
@@ -939,6 +969,9 @@ function renderDrawer(force = false) {
       <div class="qrs-tabs">${tabs.map(t => `<button class="qrs-tab ${t.id === currentTab && !searchText ? 'on' : ''}" data-tab="${esc(t.id)}">${esc(t.label)}</button>`).join('')}<button class="qrs-tab qrs-tab-edit" data-act="taborder" title="탭 순서 바꾸기">↕️</button></div>
       <div class="qrs-list"></div>`;
 
+    const grab = d.querySelector('.qrs-grab');
+    grab.addEventListener('click', () => { if (!justSwiped()) closeDrawer(); });
+    bindSwipe(grab, 1, () => closeDrawer());
     const input = d.querySelector('.qrs-search input');
     let searchTimer = null;
     input.addEventListener('input', () => {
@@ -1461,6 +1494,7 @@ function openSettingsSheet() {
         <label>즐겨찾기 고정 줄 <select class="qrs-in" data-k="favRows">
           ${[0, 1, 2].map(n => `<option value="${n}" ${s.favRows === n ? 'selected' : ''}>${n ? `${n}줄` : '안 함'}</option>`).join('')}
         </select></label>
+        <label class="qrs-check"><input type="checkbox" data-k="swipeOpen" ${s.swipeOpen !== false ? 'checked' : ''}> 손잡이를 위로 쓸어 올려 열고, 맨 위 막대를 아래로 내려 닫기 <small>(손잡이 모드)</small></label>
         <label class="qrs-check"><input type="checkbox" data-k="hideQrBar" ${s.hideQrBar ? 'checked' : ''}> 기본 QR바 숨기기</label>
         <label class="qrs-check"><input type="checkbox" data-k="showHidden" ${s.showHidden ? 'checked' : ''}> 숨김 처리된 QR도 보기</label>
       </div>

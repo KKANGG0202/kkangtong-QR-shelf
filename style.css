@@ -618,3 +618,20 @@ body[data-qrs-handle-pos="right"] #qrs_handle { left: 78%; }
 .qrs-arch-backup { display: flex; flex-wrap: wrap; gap: 5px; flex: 1 1 100%; order: 4; }
 .qrs-arch-backup .qrs-mini { border-color: var(--qrs-border); color: inherit; }
 .qrs-arch-item .qrs-hidden { display: none; }
+
+/* swipe to open / close (handle mode) */
+.qrs-grab { display: none; }
+body.qrs-swipe #qrs_handle { touch-action: none; }
+/* a taller invisible touch area above the thin handle, so a swipe is easy to start */
+body.qrs-swipe #qrs_handle::before { content: ''; position: absolute; left: -10px; right: -10px; top: -16px; bottom: 0; }
+body.qrs-swipe .qrs-grab {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 16px;
+    flex: none;
+    cursor: grab;
+    touch-action: none;
+}
+body.qrs-swipe .qrs-grab span { width: 36px; height: 4px; border-radius: 4px; background: var(--qrs-line); opacity: 0.6; }
+body.qrs-swipe .qrs-grab + .qrs-top { padding-top: 2px; }
