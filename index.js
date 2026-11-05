@@ -1911,6 +1911,84 @@ function archMsgNode(m, en) {
     return node;
 }
 
+// ---------- archive backup (download / load back) ----------
+function saveFile(filename, text, type) {
+    const blob = new Blob([text], { type });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.append(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+function safeFileName(s) {
+    return String(s ?? '').replace(/[\\/:*?"<>|\n\r\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || 'QR';
+}
+function archiveFileBase(entries) {
+    const day = new Date().toISOString().slice(0, 10);
+    if (entries.length === 1) return `QR보관함_${safeFileName(displayText(entries[0].name) || entries[0].label)}_${day}`;
+    return `QR보관함_${safeFileName(cardName())}_${day}`;
+}
+/** Readable text: what the chat showed (the translation when there is one), plus the original under it. */
+function archiveToText(entries) {
+    return entries.map(en => {
+        const head = `===== ${en.label ?? ''} ${displayText(en.name) || ''}${en.set ? ` (${en.set})` : ''} · ${new Date(en.ts).toLocaleString()}${en.fav ? ' ⭐' : ''} =====`;
+        const body = (en.msgs ?? []).map(m => {
+            const shown = String(shownText(m)).trim();
+            const orig = String(m.mes ?? '').trim();
+            const extra = trField(m) && orig && orig !== shown ? `\n\n--- 원문 ---\n${orig}` : '';
+            return `[${m.name ?? ''}]\n${shown}${extra}`;
+        }).join('\n\n');
+        return `${head}\n\n${body}`;
+    }).join('\n\n\n');
+}
+async function downloadArchive(entries, kind) {
+    if (!entries.length) { toastr.info('내려받을 게 없어요.'); return; }
+    await loadTranslationOnly();
+    const base = archiveFileBase(entries);
+    if (kind === 'txt') {
+        saveFile(`${base}.txt`, archiveToText(entries), 'text/plain;charset=utf-8');
+    } else {
+        const data = {
+            type: 'qr-shelf-archive', version: 1, exportedAt: new Date().toISOString(),
+            character: cardName(), chat: ctx().getCurrentChatId?.() ?? '',
+            entries,
+        };
+        saveFile(`${base}.json`, JSON.stringify(data, null, 1), 'application/json');
+    }
+    toastr.success(`${entries.length}개를 내려받았어요.`);
+}
+/** Load a .json backup into this chat's archive. Entries that are already here are skipped. */
+function importArchive(store, onDone) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.addEventListener('change', async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        let data;
+        try { data = JSON.parse(await file.text()); } catch { toastr.error('파일을 읽지 못했어요.'); return; }
+        if (data?.type !== 'qr-shelf-archive' || !Array.isArray(data.entries)) { toastr.error('QR 보관함에서 내려받은 백업 파일(.json)이 아니에요.'); return; }
+        const have = new Set(store.map(en => en.run));
+        const add = data.entries.filter(en => en && Array.isArray(en.msgs) && en.msgs.length && !have.has(en.run));
+        const skipped = data.entries.length - add.length;
+        if (!add.length) { toastr.info('새로 넣을 게 없어요. (이미 다 들어 있어요)'); return; }
+        const c = ctx();
+        const ok = await c.Popup.show.confirm(`${add.length}개를 이 채팅 보관함에 넣을까요?`, skipped ? `이미 있는 ${skipped}개는 건너뛰어요.` : '');
+        if (!ok) return;
+        for (const en of add) {
+            en.run ??= `imp${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+            en.ts ??= Date.now();
+            store.push(en);
+        }
+        store.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
+        await c.saveMetadata();
+        toastr.success(`${add.length}개를 보관함에 넣었어요.`);
+        onDone?.();
+    });
+    input.click();
+}
+
 /** "QR 보관함" in the wand (extensions) menu, so the archive opens without going through the shelf. */
 function addWandItem() {
     const menu = document.getElementById('extensionsMenu');
@@ -1928,7 +2006,8 @@ function openArchive() {
     document.getElementById('qrs_archive')?.remove();
     loadTranslationOnly();
     const c = ctx();
-    const store = c.chatMetadata?.qrShelfArchive ?? [];
+    // a real array in the chat's metadata, so entries loaded from a backup are saved with the chat
+    const store = c.chatMetadata ? (c.chatMetadata.qrShelfArchive ??= []) : [];
     // entries moved by older builds were all called "예전 QR 흔적"; give them a name from their content
     let renamed = 0;
     for (const en of store) {
@@ -1940,10 +2019,19 @@ function openArchive() {
     const modal = el(`<div id="qrs_archive" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>📦 QR 보관함</b> <small class="qrs-arch-count">이 채팅 · ${store.length}개</small>
           <input type="search" class="qrs-in qrs-arch-search" placeholder="QR 이름으로 찾기">
+          <div class="qrs-arch-backup">
+            <button class="qrs-mini" data-act="dl-txt" title="보관함 전체를 읽기용 텍스트로">📄 전체 텍스트로</button>
+            <button class="qrs-mini" data-act="dl-json" title="보관함 전체를 다시 불러올 수 있는 백업 파일로">💾 전체 백업</button>
+            <button class="qrs-mini" data-act="load" title="백업 파일(.json)을 이 채팅 보관함에 넣기">📂 불러오기</button>
+          </div>
           <button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list"></div></div></div>`);
     document.body.append(modal);
     const list = modal.querySelector('.qrs-arch-list');
+    // "전체" means everything in this chat's archive, newest last (search doesn't narrow it)
+    modal.querySelector('[data-act="dl-txt"]').addEventListener('click', () => downloadArchive([...store], 'txt'));
+    modal.querySelector('[data-act="dl-json"]').addEventListener('click', () => downloadArchive([...store], 'json'));
+    modal.querySelector('[data-act="load"]').addEventListener('click', () => importArchive(store, () => render()));
     const render = () => {
         const q = modal.querySelector('.qrs-arch-search').value.trim().toLowerCase();
         renderArchiveBadge();
@@ -1962,8 +2050,16 @@ function openArchive() {
                   <button class="qrs-btn qrs-btn-main" data-act="restore">↩ 채팅으로 꺼내기</button>
                   <button class="qrs-btn" data-act="copy">📋 복사</button>
                   <button class="qrs-btn" data-act="rename">✏️ 이름</button>
+                  <button class="qrs-btn" data-act="dl">💾 내려받기</button>
                   <button class="qrs-btn" data-act="del">🗑 지우기</button>
+                </div>
+                <div class="qrs-actions qrs-hidden" data-box="dl">
+                  <button class="qrs-btn" data-act="dl-txt">📄 텍스트(.txt)</button>
+                  <button class="qrs-btn" data-act="dl-json">💾 백업(.json)</button>
                 </div></details>`);
+            node.querySelector('[data-act="dl"]').addEventListener('click', () => node.querySelector('[data-box="dl"]').classList.toggle('qrs-hidden'));
+            node.querySelector('[data-box="dl"] [data-act="dl-txt"]').addEventListener('click', () => downloadArchive([en], 'txt'));
+            node.querySelector('[data-box="dl"] [data-act="dl-json"]').addEventListener('click', () => downloadArchive([en], 'json'));
             node.addEventListener('toggle', () => {
                 if (!node.open) return;
                 const box = node.querySelector('.qrs-arch-msgs');

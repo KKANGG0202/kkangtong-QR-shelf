@@ -594,3 +594,7 @@ body[data-qrs-handle-pos="right"] #qrs_handle { left: 78%; }
 .qrs-arch-star { background: none; border: 0; padding: 0 2px; cursor: pointer; font-size: 1.05em; line-height: 1; color: inherit; opacity: 0.3; filter: grayscale(1); }
 .qrs-arch-star.is-on { opacity: 1; filter: none; }
 .qrs-arch-item.is-fav { border-color: rgba(230, 180, 40, 0.7); }
+/* archive backup buttons */
+.qrs-arch-backup { display: flex; flex-wrap: wrap; gap: 5px; flex: 1 1 100%; order: 4; }
+.qrs-arch-backup .qrs-mini { border-color: var(--qrs-border); color: inherit; }
+.qrs-arch-item .qrs-hidden { display: none; }
