@@ -1560,9 +1560,15 @@ async function loadWorldNames(sheet, reopen) {
 // ---------- memory cleanup for old QR results ----------
 const QR_PROMPT_RE = /<\s*\/?\s*(system|instruction)\s*>|pause (the|this) (story|role-?play|rp|current scenario|narrative|conversation)|let'?s pause|\booc mode\b|\[\s*ooc|stop role-?playing|roleplay suspended|story progression halted/i;
 
-function findTraces() {
+function findTraces(includeHidden = false) {
     const chat = ctx().chat;
     const out = [];
+    // A QR made with /gen | /sendas posts its result through a slash command, so the message has no
+    // generation record (extra.api / extra.model) while normal bot replies do. Only trust this when
+    // most bot messages in the chat do have the record (imported or very old chats don't).
+    const bots = chat.slice(1).filter(m => m && !m.is_user && !m.is_system);
+    const withRecord = bots.filter(m => m.extra?.api || m.extra?.model).length;
+    const recordsReliable = bots.length >= 4 && withRecord / bots.length >= 0.7;
     for (let i = 1; i < chat.length; i++) {
         const m = chat[i];
         if (!m || m.extra?.qrShelf || m.extra?.type) continue;
@@ -1572,19 +1578,22 @@ function findTraces() {
         const prev = out[out.length - 1];
         if (m.is_user && QR_PROMPT_RE.test(m.mes ?? '')) out.push({ i, reason: 'QR 지시문 같아요', checked: false });
         else if (!m.is_user && prev?.i === i - 1 && prev.reason === 'QR 지시문 같아요') out.push({ i, reason: '위 지시문의 답', checked: false });
+        else if (recordsReliable && !m.is_user && !m.extra?.api && !m.extra?.model) out.push({ i, reason: 'AI 생성 기록이 없어요 (/sendas로 보낸 QR 결과일 수도)', checked: false });
+        else if (includeHidden && m.is_system && !m._summarizedHidden) out.push({ i, reason: '내가 숨긴 메시지', checked: false });
     }
     return out;
 }
 
-function openTraceCleaner() {
+function openTraceCleaner(includeHidden = false) {
     document.getElementById('qrs_traces')?.remove();
     const c = ctx();
-    const traces = findTraces();
+    const traces = findTraces(includeHidden);
     const modal = el(`<div id="qrs_traces" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>🧹 예전 QR 흔적 정리</b> <small>${traces.length}개 찾음</small><button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list">
           <div class="qrs-help">책장을 쓰기 전에 돌린 QR 지시문과 그 바로 다음 답만 찾았어요. <b>미리 체크된 건 없어요.</b> 꼭 내용을 펼쳐 보고 QR이 맞는 것만 골라주세요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
           그러면 Memoria는 그 턴에서 뽑은 기억을 스스로 지우고, 시나리오 자동요약도 그 메시지의 요약을 지워요. 보관함에서 언제든 다시 꺼낼 수 있어요.</div>
+          <label class="qrs-trace"><input type="checkbox" data-act="hidden" ${includeHidden ? 'checked' : ''}><span>👁 내가 숨긴 메시지도 목록에 보여주기</span></label>
           ${traces.length ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
           <div class="qrs-trace-list">${traces.length ? traces.map((t, k) => {
             const m = c.chat[t.i];
@@ -1597,6 +1606,7 @@ function openTraceCleaner() {
     document.body.append(modal);
     modal.querySelector('.qrs-sheet-close').addEventListener('click', () => modal.remove());
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+    modal.querySelector('input[data-act="hidden"]').addEventListener('change', e => openTraceCleaner(e.target.checked));
     const all = modal.querySelector('input[data-act="all"]');
     const boxes = () => [...modal.querySelectorAll('input[data-k]')];
     all?.addEventListener('change', () => boxes().forEach(b => { b.checked = all.checked; }));
