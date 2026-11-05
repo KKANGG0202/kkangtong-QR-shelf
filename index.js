@@ -1621,11 +1621,11 @@ function openTraceCleaner(includeHidden = false) {
           <div class="qrs-help">책장을 쓰기 전에 돌린 QR 지시문·결과로 보이는 메시지를 찾았어요. <b>미리 체크된 건 없어요.</b> 꼭 내용을 펼쳐 보고 QR이 맞는 것만 골라주세요. 체크한 메시지는 <b>보관함으로 옮겨지고 채팅에서 빠져요.</b>
           그러면 Memoria는 그 턴에서 뽑은 기억을 스스로 지우고, 시나리오 자동요약도 그 메시지의 요약을 지워요. 보관함에서 언제든 다시 꺼낼 수 있어요.</div>
           <label class="qrs-trace"><input type="checkbox" data-act="hidden" ${includeHidden ? 'checked' : ''}><span>👁 내가 숨긴 메시지도 목록에 보여주기</span></label>
-          ${traces.some(t => !t.weak) ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
+          ${traces.length ? '<label class="qrs-trace qrs-trace-all"><input type="checkbox" data-act="all"><span><b>전체 선택</b></span></label>' : ''}
           <div class="qrs-trace-list">${traces.length ? traces.map((t, k) => {
             const m = c.chat[t.i];
             const divider = t.weak && !traces[k - 1]?.weak
-                ? '<div class="qrs-help"><b>👁 그냥 숨긴 메시지</b> · QR 흔적은 못 찾았어요. 전체 선택에 안 들어가니 하나씩 보고 골라주세요.</div>' : '';
+                ? '<div class="qrs-help"><b>👁 그냥 숨긴 메시지</b> · QR 흔적은 못 찾았어요. 전체 선택하면 여기도 체크되니, QR이 아닌 건 꼭 빼주세요.</div>' : '';
             return `${divider}<label class="qrs-trace"><input type="checkbox" data-k="${k}" ${t.weak ? 'data-weak="1"' : ''} ${t.checked ? 'checked' : ''}>
               <span><b>#${t.i}</b> ${esc(m.name)} <small>· ${esc(t.reason)}</small><br><span class="qrs-trace-text">${esc(String(m.mes ?? '').replace(/\s+/g, ' ').slice(0, 120))}</span></span></label>`;
         }).join('') : '<div class="qrs-empty">찾은 흔적이 없어요 👍</div>'}</div>
@@ -1637,8 +1637,8 @@ function openTraceCleaner(includeHidden = false) {
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
     modal.querySelector('input[data-act="hidden"]').addEventListener('change', e => openTraceCleaner(e.target.checked));
     const all = modal.querySelector('input[data-act="all"]');
-    // "select all" only covers messages with a QR signal; plain hidden messages are picked one by one
-    const boxes = () => [...modal.querySelectorAll('input[data-k]:not([data-weak])')];
+    // "select all" covers every listed message (plain hidden ones too); the user unticks what isn't a QR
+    const boxes = () => [...modal.querySelectorAll('input[data-k]')];
     all?.addEventListener('change', () => boxes().forEach(b => { b.checked = all.checked; }));
     modal.querySelector('.qrs-trace-list')?.addEventListener('change', () => {
         if (!all) return;
