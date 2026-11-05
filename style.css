@@ -26,6 +26,10 @@ body.salty :is(#qrs_root, .qrs-modal, #qrs_progress, .qrs-ghost, .qrs-runbar, .m
     height: 0;              /* takes no room: the chat shows right up to the input box */
     z-index: 30;
     color: var(--qrs-fg);
+    /* Some themes (e.g. Paper Sage) set pointer-events: none on #form_sheld and only turn it back on for
+       #send_form's children. The shelf lives in #form_sheld, so it must turn it back on for itself, or taps
+       fall through to the chat and the drawer closes. The root has no height, so it blocks nothing. */
+    pointer-events: auto !important;
 }
 
 /* Hide the built-in QR buttons but keep Tavern Helper script buttons (div#script_container_<id> inside #qr--bar) */
