@@ -2127,6 +2127,14 @@ function openArchive() {
             <button class="qrs-mini" data-act="dl-txt" title="보관함 전체를 읽기용 텍스트로">📄 전체 텍스트로</button>
             <button class="qrs-mini" data-act="dl-json" title="보관함 전체를 다시 불러올 수 있는 백업 파일로">💾 전체 백업</button>
             <button class="qrs-mini" data-act="load" title="백업 파일(.json)을 이 채팅 보관함에 넣기">📂 불러오기</button>
+            <button class="qrs-mini" data-act="select" title="여러 개를 골라서 한꺼번에 지우기">☑️ 여러 개 지우기</button>
+          </div>
+          <div class="qrs-arch-selbar qrs-hidden">
+            <span class="qrs-arch-selcount">0개 선택</span>
+            <button class="qrs-mini" data-act="sel-all">보이는 것 전체 선택</button>
+            <button class="qrs-mini qrs-mini-main" data-act="sel-backup-del" title="고른 것을 백업 파일(.json)로 받고 나서 지워요">💾 백업 받고 지우기</button>
+            <button class="qrs-mini" data-act="sel-del">🗑 지우기</button>
+            <button class="qrs-mini" data-act="sel-cancel">취소</button>
           </div>
           <button class="qrs-sheet-close" title="닫기">✕</button></div>
         <div class="qrs-arch-list"></div></div></div>`);
@@ -2136,6 +2144,44 @@ function openArchive() {
     modal.querySelector('[data-act="dl-txt"]').addEventListener('click', () => downloadArchive([...store], 'txt'));
     modal.querySelector('[data-act="dl-json"]').addEventListener('click', () => downloadArchive([...store], 'json'));
     modal.querySelector('[data-act="load"]').addEventListener('click', () => importArchive(store, () => render()));
+    // ---- pick several entries and delete them together ----
+    let selecting = false;
+    const picked = new Set();
+    let shown = [];
+    const selbar = modal.querySelector('.qrs-arch-selbar');
+    const updateSel = () => {
+        for (const en of [...picked]) if (!store.includes(en)) picked.delete(en);
+        modal.querySelector('.qrs-arch-selcount').textContent = `${picked.size}개 선택`;
+    };
+    const setSelecting = on => {
+        selecting = on;
+        picked.clear();
+        selbar.classList.toggle('qrs-hidden', !on);
+        modal.querySelector('.qrs-arch-backup').classList.toggle('qrs-hidden', on);
+        updateSel(); render();
+    };
+    const deletePicked = async withBackup => {
+        if (!picked.size) { toastr.info('지울 걸 먼저 골라주세요.'); return; }
+        const list = store.filter(en => picked.has(en)); // keep the stored order in the backup
+        const favs = list.filter(en => en.fav).length;
+        if (withBackup) await downloadArchive(list, 'json');
+        const ok = await c.Popup.show.confirm(`${list.length}개를 보관함에서 지울까요?`,
+            `${favs ? `⭐ 즐겨찾기 ${favs}개도 들어 있어요. ` : ''}${withBackup ? '방금 받은 백업 파일로 다시 불러올 수 있어요.' : '지우면 되돌릴 수 없어요.'}`);
+        if (!ok) return;
+        for (const en of list) { const i = store.indexOf(en); if (i >= 0) store.splice(i, 1); }
+        await c.saveMetadata();
+        toastr.success(`${list.length}개를 지웠어요.`);
+        setSelecting(false);
+    };
+    modal.querySelector('[data-act="select"]').addEventListener('click', () => setSelecting(true));
+    modal.querySelector('[data-act="sel-cancel"]').addEventListener('click', () => setSelecting(false));
+    modal.querySelector('[data-act="sel-all"]').addEventListener('click', () => {
+        const all = shown.length && shown.every(en => picked.has(en));
+        for (const en of shown) { if (all) picked.delete(en); else picked.add(en); }
+        updateSel(); render();
+    });
+    modal.querySelector('[data-act="sel-del"]').addEventListener('click', () => deletePicked(false));
+    modal.querySelector('[data-act="sel-backup-del"]').addEventListener('click', () => deletePicked(true));
     const render = () => {
         const q = modal.querySelector('.qrs-arch-search').value.trim().toLowerCase();
         renderArchiveBadge();
@@ -2150,14 +2196,15 @@ function openArchive() {
                 return !!hit;
             })
             .sort((a, b) => (b.fav ? 1 : 0) - (a.fav ? 1 : 0));
+        shown = entries;
         if (!entries.length) { list.innerHTML = `<div class="qrs-empty">${q ? '찾는 내용이 없어요.' : '보관함이 비어 있어요.'}</div>`; return; }
         list.innerHTML = '';
         for (const en of entries) {
             const date = new Date(en.ts).toLocaleString();
             const hit = snips.get(en);
             const snip = hit ? `<span class="qrs-arch-snip">${hit.cut0 ? '…' : ''}${esc(hit.before)}<mark>${esc(hit.match)}</mark>${esc(hit.after)}${hit.cut1 ? '…' : ''}</span>` : '';
-            const node = el(`<details class="qrs-arch-item ${en.fav ? 'is-fav' : ''}">
-                <summary><button class="qrs-arch-star ${en.fav ? 'is-on' : ''}" data-act="star" title="즐겨찾기">⭐</button><span class="qrs-arch-label">${esc(en.label)}</span> ${esc(displayText(en.name) || '')}<small>${esc(date)}</small>${snip}</summary>
+            const node = el(`<details class="qrs-arch-item ${en.fav ? 'is-fav' : ''} ${selecting && picked.has(en) ? 'is-picked' : ''}">
+                <summary>${selecting ? `<input type="checkbox" class="qrs-arch-pick" ${picked.has(en) ? 'checked' : ''}>` : ''}<button class="qrs-arch-star ${en.fav ? 'is-on' : ''}" data-act="star" title="즐겨찾기">⭐</button><span class="qrs-arch-label">${esc(en.label)}</span> ${esc(displayText(en.name) || '')}<small>${esc(date)}</small>${snip}</summary>
                 <div class="qrs-arch-msgs"></div>
                 <div class="qrs-actions">
                   <button class="qrs-btn qrs-btn-main" data-act="restore">↩ 채팅으로 꺼내기</button>
@@ -2170,6 +2217,17 @@ function openArchive() {
                   <button class="qrs-btn" data-act="dl-txt">📄 텍스트(.txt)</button>
                   <button class="qrs-btn" data-act="dl-json">💾 백업(.json)</button>
                 </div></details>`);
+            if (selecting) {
+                // while picking, a tap on the row ticks it instead of opening it
+                node.querySelector('summary').addEventListener('click', e => {
+                    if (e.target.closest('[data-act="star"]')) return;
+                    e.preventDefault();
+                    if (picked.has(en)) picked.delete(en); else picked.add(en);
+                    node.querySelector('.qrs-arch-pick').checked = picked.has(en);
+                    node.classList.toggle('is-picked', picked.has(en));
+                    updateSel();
+                });
+            }
             node.querySelector('[data-act="dl"]').addEventListener('click', () => node.querySelector('[data-box="dl"]').classList.toggle('qrs-hidden'));
             node.querySelector('[data-box="dl"] [data-act="dl-txt"]').addEventListener('click', () => downloadArchive([en], 'txt'));
             node.querySelector('[data-box="dl"] [data-act="dl-json"]').addEventListener('click', () => downloadArchive([en], 'json'));

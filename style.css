@@ -638,3 +638,11 @@ body.qrs-swipe .qrs-grab + .qrs-top { padding-top: 2px; }
 /* archive: where a search matched inside the message text */
 .qrs-arch-snip { flex: 1 1 100%; font-size: 0.82em; opacity: 0.75; line-height: 1.45; word-break: break-word; }
 .qrs-arch-snip mark { background: rgba(255, 200, 40, 0.45); color: inherit; border-radius: 3px; padding: 0 1px; }
+/* archive: pick several entries */
+.qrs-arch-selbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; flex: 1 1 100%; order: 4; }
+.qrs-arch-selbar.qrs-hidden, .qrs-arch-backup.qrs-hidden { display: none; }
+.qrs-arch-selbar .qrs-mini { border-color: var(--qrs-border); color: inherit; }
+.qrs-arch-selbar .qrs-mini-main { background: var(--qrs-accent); color: var(--qrs-on-accent); }
+.qrs-arch-selcount { font-weight: bold; margin-right: 4px; }
+.qrs-arch-pick { margin: 0 4px 0 0; pointer-events: none; }
+.qrs-arch-item.is-picked { background: rgba(127, 127, 127, 0.12); }
