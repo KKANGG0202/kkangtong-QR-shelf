@@ -2078,6 +2078,21 @@ function importArchive(store, onDone) {
     input.click();
 }
 
+/** First place `q` (lowercase) shows up in an entry's messages (shown text, then the original), with some text around it. */
+function archiveTextHit(en, q) {
+    for (const m of en.msgs ?? []) {
+        const texts = [String(shownText(m) ?? ''), String(m.mes ?? '')];
+        for (const raw of texts) {
+            const t = raw.replace(/\s+/g, ' ');
+            const i = t.toLowerCase().indexOf(q);
+            if (i < 0) continue;
+            const a = Math.max(0, i - 30), b = Math.min(t.length, i + q.length + 50);
+            return { before: t.slice(a, i), match: t.slice(i, i + q.length), after: t.slice(i + q.length, b), cut0: a > 0, cut1: b < t.length };
+        }
+    }
+    return null;
+}
+
 /** "QR 보관함" in the wand (extensions) menu, so the archive opens without going through the shelf. */
 function addWandItem() {
     const menu = document.getElementById('extensionsMenu');
@@ -2107,7 +2122,7 @@ function openArchive() {
     if (renamed) c.saveMetadata();
     const modal = el(`<div id="qrs_archive" class="qrs-modal" data-bl-native-ext-colors><div class="qrs-modal-inner">
         <div class="qrs-modal-head"><b>📦 QR 보관함</b> <small class="qrs-arch-count">이 채팅 · ${store.length}개</small>
-          <input type="search" class="qrs-in qrs-arch-search" placeholder="QR 이름으로 찾기">
+          <input type="search" class="qrs-in qrs-arch-search" placeholder="이름·내용으로 찾기">
           <div class="qrs-arch-backup">
             <button class="qrs-mini" data-act="dl-txt" title="보관함 전체를 읽기용 텍스트로">📄 전체 텍스트로</button>
             <button class="qrs-mini" data-act="dl-json" title="보관함 전체를 다시 불러올 수 있는 백업 파일로">💾 전체 백업</button>
@@ -2124,16 +2139,25 @@ function openArchive() {
     const render = () => {
         const q = modal.querySelector('.qrs-arch-search').value.trim().toLowerCase();
         renderArchiveBadge();
-        // newest first, starred entries on top
+        // newest first, starred entries on top; a search matches the name or the message text
+        const snips = new Map();
         const entries = [...store].reverse()
-            .filter(en => !q || [en.label, en.name, en.set].some(v => String(v ?? '').toLowerCase().includes(q)))
+            .filter(en => {
+                if (!q) return true;
+                if ([en.label, en.name, en.set].some(v => String(v ?? '').toLowerCase().includes(q))) return true;
+                const hit = archiveTextHit(en, q);
+                if (hit) snips.set(en, hit);
+                return !!hit;
+            })
             .sort((a, b) => (b.fav ? 1 : 0) - (a.fav ? 1 : 0));
-        if (!entries.length) { list.innerHTML = '<div class="qrs-empty">보관함이 비어 있어요.</div>'; return; }
+        if (!entries.length) { list.innerHTML = `<div class="qrs-empty">${q ? '찾는 내용이 없어요.' : '보관함이 비어 있어요.'}</div>`; return; }
         list.innerHTML = '';
         for (const en of entries) {
             const date = new Date(en.ts).toLocaleString();
+            const hit = snips.get(en);
+            const snip = hit ? `<span class="qrs-arch-snip">${hit.cut0 ? '…' : ''}${esc(hit.before)}<mark>${esc(hit.match)}</mark>${esc(hit.after)}${hit.cut1 ? '…' : ''}</span>` : '';
             const node = el(`<details class="qrs-arch-item ${en.fav ? 'is-fav' : ''}">
-                <summary><button class="qrs-arch-star ${en.fav ? 'is-on' : ''}" data-act="star" title="즐겨찾기">⭐</button><span class="qrs-arch-label">${esc(en.label)}</span> ${esc(displayText(en.name) || '')}<small>${esc(date)}</small></summary>
+                <summary><button class="qrs-arch-star ${en.fav ? 'is-on' : ''}" data-act="star" title="즐겨찾기">⭐</button><span class="qrs-arch-label">${esc(en.label)}</span> ${esc(displayText(en.name) || '')}<small>${esc(date)}</small>${snip}</summary>
                 <div class="qrs-arch-msgs"></div>
                 <div class="qrs-actions">
                   <button class="qrs-btn qrs-btn-main" data-act="restore">↩ 채팅으로 꺼내기</button>
@@ -2185,7 +2209,9 @@ function openArchive() {
             list.append(node);
         }
     };
-    modal.querySelector('.qrs-arch-search').addEventListener('input', render);
+    // wait for a short pause in typing: searching message text is heavier than names
+    let searchTimer = null;
+    modal.querySelector('.qrs-arch-search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 180); });
     modal.querySelector('.qrs-sheet-close').addEventListener('click', () => modal.remove());
     modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
     render();

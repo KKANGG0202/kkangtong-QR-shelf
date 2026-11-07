@@ -635,3 +635,6 @@ body.qrs-swipe .qrs-grab {
 }
 body.qrs-swipe .qrs-grab span { width: 36px; height: 4px; border-radius: 4px; background: var(--qrs-line); opacity: 0.6; }
 body.qrs-swipe .qrs-grab + .qrs-top { padding-top: 2px; }
+/* archive: where a search matched inside the message text */
+.qrs-arch-snip { flex: 1 1 100%; font-size: 0.82em; opacity: 0.75; line-height: 1.45; word-break: break-word; }
+.qrs-arch-snip mark { background: rgba(255, 200, 40, 0.45); color: inherit; border-radius: 3px; padding: 0 1px; }
